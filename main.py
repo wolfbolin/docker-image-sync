@@ -1,5 +1,7 @@
 # encoding=utf-8
 import os.path
+import time
+
 import pymysql
 import pymysql.cursors
 from common import *
@@ -33,7 +35,12 @@ def main():
                 print_yellow(f"Skip image tag {tag["name"]}. Docker image format is deprecated.")
                 continue
 
-            docker_tag_sync(rule, tag)
+            for i in range(3):
+                try:
+                    docker_tag_sync(rule, tag)
+                except ChildProcessError:
+                    time.sleep(3)
+                    continue
 
 
 def docker_tag_sync(sync_rule, tag_info):

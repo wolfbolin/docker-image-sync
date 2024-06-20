@@ -31,13 +31,20 @@ def docker_image_tags(image_name: str):
 
 
 def harbor_image_tags(project, name):
-    url = f"https://hub.wiolfi.net/api/v2.0/projects/{project}/repositories/{name}/artifacts"
-    res = requests.get(url=url, params={"page_size": 100}, proxies=proxies)
-    print("GET", res.url)
-
+    page = 1
     tag_list = []
-    for item in res.json():
-        if item['tags'] is not None:
-            tag_list.append(item['tags'][0]["name"])
+    url = f"https://hub.wiolfi.net/api/v2.0/projects/{project}/repositories/{name}/artifacts"
+    while True:
+        res = requests.get(url=url, params={"page": page, "page_size": 100}, proxies=proxies)
+        print("GET", res.url)
+
+        for item in res.json():
+            if item['tags'] is not None:
+                for tag in item['tags']:
+                    tag_list.append(tag["name"])
+
+        if len(res.json()) != 100:
+            break
+        page += 1
 
     return tag_list
