@@ -7,12 +7,12 @@ tags_cache = {}
 proxies = {"http": "http://10.10.30.34:12821", "https": "http://10.10.30.34:12821"}
 
 
-def docker_image_tags(image_name: str):
-    if image_name in tags_cache.keys():
-        return tags_cache[image_name]
+def docker_image_tags(project: str, name: str):
+    if name in tags_cache.keys():
+        return tags_cache[name]
 
     page = 1
-    url = f"https://hub.docker.com/v2/namespaces/library/repositories/{image_name}/tags"
+    url = f"https://hub.docker.com/v2/namespaces/{project}/repositories/{name}/tags"
 
     tag_list = []
     while True:
@@ -26,7 +26,7 @@ def docker_image_tags(image_name: str):
             break
         page += 1
 
-    tags_cache[image_name] = tag_list
+    tags_cache[name] = tag_list
     return tag_list
 
 

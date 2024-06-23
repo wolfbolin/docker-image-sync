@@ -18,12 +18,13 @@ def main():
 
     for rule in rules:
         registry = rule['registry']
+        project = rule['project']
         image_name = rule['name']
         tags_rule = rule['tags']
 
         print_green(f"Fetch image [{image_name}] tags from [{registry}]")
-        harbor_tags = harbor_image_tags("mirror", image_name)
-        for tag in docker_image_tags(image_name):
+        harbor_tags = harbor_image_tags("mirror", f"{project}%252F{image_name}")
+        for tag in docker_image_tags(project, image_name):
             if not re.match(tags_rule, tag["name"]):
                 continue
 
@@ -47,11 +48,11 @@ def docker_tag_sync(sync_rule, tag_info):
     image_tag = tag_info['name']
     image_name = sync_rule['name']
 
-    source_repo = os.path.join("hub.wiolfi.net", "docker")
+    source_repo = os.path.join("hub.wiolfi.net", "docker", sync_rule['project'])
     source_img = os.path.join(source_repo, image_name)
     source_tag = f"{source_img}:{image_tag}"
 
-    target_repo = "hub.wiolfi.net/mirror"
+    target_repo = os.path.join("hub.wiolfi.net", "mirror", sync_rule['project'])
     target_img = os.path.join(target_repo, image_name)
     target_tag = f"{target_img}:{image_tag}"
 
