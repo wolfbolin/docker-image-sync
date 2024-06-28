@@ -1,63 +1,86 @@
 # encoding=utf-8
-import os.path
 import time
-
+import os.path
 import pymysql
-import pymysql.cursors
+import requests
 from common import *
+import pymysql.cursors
 from repository import *
 
 
 def main():
+    session = requests.Session()
+
     mysql = pymysql.connect(host='ssas.wiolfi.cn', port=12806, user='root', passwd=os.getenv("DB_PASSWD"), db='wiolfi')
     print("MySQL connect success")
 
     cursor = mysql.cursor(cursor=pymysql.cursors.DictCursor)
-    cursor.execute("SELECT * FROM harbor_sync_rule")
+    cursor.execute("SELECT * FROM harbor_sync_rule ORDER BY `id` DESC")
     rules = cursor.fetchall()
 
+    img_count = [0, 0, 0, 0]  # Success, Failed, Exist, Skip
     for rule in rules:
-        registry = rule['registry']
-        project = rule['project']
-        image_name = rule['name']
-        tags_rule = rule['tags']
+        source_img = {
+            "registry": rule['registry'],
+            "project": rule['project'],
+            "name": rule['name'],
+            "tag": "",
+        }
+        target_img = {
+            "registry": "hub.wiolfi.net",
+            "project": f"mirror/{rule['project']}",
+            "name": rule['name'],
+            "tag": "",
+        }
 
-        print_green(f"Fetch image [{image_name}] tags from [{registry}]")
-        harbor_tags = harbor_image_tags("mirror", f"{project}%252F{image_name}")
-        for tag in docker_image_tags(project, image_name):
-            if not re.match(tags_rule, tag["name"]):
+        print_green(f"Fetch image [{source_img['project']}/{source_img['name']}] "
+                    f"from [{target_img['project']}/{target_img['name']}]")
+
+        harbor_tags = harbor_image_tags(session, "mirror", f"{rule['project']}%252F{rule['name']}")
+
+        if rule['tag'] != "" and rule['tag'] not in harbor_tags:
+            source_img['tag'] = rule['tag']
+            target_img['tag'] = rule['tag']
+            docker_tag_sync(source_img, target_img)
+
+        if rule['tags'] == "":
+            continue
+
+        docker_hub_tags = docker_image_tags(session, source_img['project'], source_img['name'])
+        for remote_tag in docker_hub_tags:
+            if not re.match(rule['tags'], remote_tag["name"]):
+                img_count[3] += 1
                 continue
 
-            if tag['name'] in harbor_tags:
-                print_yellow(f"Skip image tag {tag["name"]}. Docker image tag is existed.")
+            if remote_tag['media_type'].startswith("application/vnd.docker.distribution.manifest.v1"):
+                print_yellow(f"Skip image tag {remote_tag["name"]}. Docker image format is deprecated.")
+                img_count[3] += 1
                 continue
 
-            if tag['media_type'].startswith("application/vnd.docker.distribution.manifest.v1"):
-                print_yellow(f"Skip image tag {tag["name"]}. Docker image format is deprecated.")
+            if remote_tag['name'] in harbor_tags:
+                print_yellow(f"Skip image tag {remote_tag["name"]}. Docker image tag is existed.")
+                img_count[2] += 1
                 continue
 
-            for i in range(3):
-                try:
-                    docker_tag_sync(rule, tag)
-                except ChildProcessError:
-                    time.sleep(3)
-                    continue
+            try:
+                source_img['tag'] = remote_tag["name"]
+                target_img['tag'] = remote_tag["name"]
+                docker_tag_sync(source_img, target_img)
+                img_count[0] += 1
+            except ChildProcessError:
+                img_count[1] += 1
+                time.sleep(3)
+                continue
+
+    print("Sync harbor image finish: Success={} Failed={} Exist={} Skip={}".format(*img_count))
 
 
-def docker_tag_sync(sync_rule, tag_info):
-    image_tag = tag_info['name']
-    image_name = sync_rule['name']
+def docker_tag_sync(source_img, target_img):
+    source_url = f"{os.path.join(source_img['registry'], source_img['project'], source_img['name'])}:{source_img['tag']}"
+    target_url = f"{os.path.join(target_img['registry'], target_img['project'], target_img['name'])}:{target_img['tag']}"
 
-    source_repo = os.path.join("hub.wiolfi.net", "docker", sync_rule['project'])
-    source_img = os.path.join(source_repo, image_name)
-    source_tag = f"{source_img}:{image_tag}"
-
-    target_repo = os.path.join("hub.wiolfi.net", "mirror", sync_rule['project'])
-    target_img = os.path.join(target_repo, image_name)
-    target_tag = f"{target_img}:{image_tag}"
-
-    print_blue(f"Sync image {source_tag} => {target_tag}")
-    cmd = f"skopeo copy --all --preserve-digests docker://{source_tag} docker://{target_tag}"
+    print_blue(f"Sync image {source_url} => {target_url}")
+    cmd = f"skopeo copy --all --preserve-digests docker://{source_url} docker://{target_url}"
     run_shell(cmd)
 
 
