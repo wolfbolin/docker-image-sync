@@ -1,0 +1,25 @@
+# 全局代理（可选，支持环境变量 HTTPS_PROXY/HTTP_PROXY 兜底）
+proxy: "http://10.10.30.34:12821"
+
+# 代理排除列表（可选，支持环境变量 NO_PROXY 兜底）
+# 拉取镜像时使用代理，但推送到以下地址时不走代理
+no_proxy: "hub.wiolfi.net,127.0.0.1,localhost"
+
+# 同步行为
+sync:
+  retry: 3
+  interval: 5s
+
+# 同步规则 - 每条规则独立配置源和目标
+rules:
+  - name: "ubuntu"
+    source: "docker.io/library/ubuntu"
+    destination: "hub.wiolfi.net:23333/docker.io/ubuntu"
+    proxy: true
+    tags: ["22.04", "24.04"]
+
+  - name: "alpine"
+    source: "docker.io/library/alpine"
+    destination: "hub.wiolfi.net:23333/docker.io/alpine"
+    proxy: true
+    tag_regex: '^\d+\.\d+(\.\d+)?$'
