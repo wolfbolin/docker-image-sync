@@ -70,7 +70,7 @@ cp config.yaml.example config.yaml
 
 ```yaml
 # 全局代理（可选，支持环境变量 HTTPS_PROXY/HTTP_PROXY 兜底）
-proxy: "http://10.10.30.34:12821"
+proxy: "http://1.2.3.4:5678"
 
 # 同步行为
 sync:
@@ -82,21 +82,21 @@ rules:
   # 精确标签列表同步
   - name: "alpine"
     source: "docker.io/library/alpine"
-    destination: "hub.wiolfi.net/mirror/library/alpine"
+    destination: "mirror.com/docker.io/alpine"
     proxy: true
     tags: ["3.19", "3.20"]
 
   # 正则匹配同步
   - name: "nginx"
     source: "docker.io/library/nginx"
-    destination: "hub.wiolfi.net/mirror/library/nginx"
+    destination: "mirror.com/docker.io/nginx"
     proxy: false
     tag_regex: "^1\\.2[0-9]\\..*$"
 
   # 不同目标仓库同步
   - name: "kube-apiserver"
     source: "registry.k8s.io/kube-apiserver"
-    destination: "harbor.example.com/kubernetes/kube-apiserver"
+    destination: "mirror.com/k8s.io/kube-apiserver"
     proxy: true
     tag_regex: "^v1\\.(28|29|30)\\.[0-9]+$"
 ```
@@ -151,12 +151,12 @@ sync-docker list -c config.yaml -r alpine
 ```
 [INFO] Config loaded successfully
 [INFO] Start sync, 2 rules in total
-[INFO] [Rule 1/2] alpine => hub.wiolfi.net/mirror/library/alpine
-[INFO]   Sync: docker.io/library/alpine:3.19 => hub.wiolfi.net/mirror/library/alpine:3.19
+[INFO] [Rule 1/2] alpine => mirror..com/docker.io/alpine
+[INFO]   Sync: docker.io/library/alpine:3.19 => mirror..com/docker.io/alpine:3.19
 [DONE]   ✓ Success
-[INFO] [Rule 2/2] nginx => hub.wiolfi.net/mirror/library/nginx
+[INFO] [Rule 2/2] nginx => mirror..com/docker.io/nginx
 [WARN]   Skip: 1.20.0 (exists)
-[INFO]   Sync: docker.io/library/nginx:1.21.0 => hub.wiolfi.net/mirror/library/nginx:1.21.0
+[INFO]   Sync: docker.io/library/nginx:1.21.0 => mirror..com/docker.io/nginx:1.21.0
 [DONE]   ✓ Success
 [INFO] Sync complete: Success=2 Failed=0 Exist=1 Skip=0
 ```
@@ -165,10 +165,10 @@ sync-docker list -c config.yaml -r alpine
 
 ```
 ╭ Rule 1/2 ──────────────────────────────────────────────╮
-│ Name:        alpine                                      │
-│ Source:      docker.io/library/alpine                    │
-│ Destination: hub.wiolfi.net/mirror/library/alpine        │
-│ Mode:        tags (exact match)                          │
+│ Name:        alpine                                │
+│ Source:      docker.io/library/alpine              │
+│ Destination: mirror..com/docker.io/alpine          │
+│ Mode:        tags (exact match)                    │
 ╰──────────────────────────────────────────────────────────╯
   ✓ Will sync (2):  3.19  3.20
   ● Already exist (0):  -
@@ -177,7 +177,7 @@ sync-docker list -c config.yaml -r alpine
 ╭ Rule 2/2 ──────────────────────────────────────────────╮
 │ Name:        nginx                                       │
 │ Source:      docker.io/library/nginx                     │
-│ Destination: hub.wiolfi.net/mirror/library/nginx         │
+│ Destination: mirror..com/docker.io/nginx                 │
 │ Mode:        tag_regex                                   │
 │ Pattern:     ^1\.2[0-9]\..*$                             │
 │ Total tags:  156                                         │
@@ -193,11 +193,11 @@ sync-docker list -c config.yaml -r alpine
 List images for 2 rule(s):
 ========================================
 
-  alpine (docker.io/library/alpine => hub.wiolfi.net/mirror/library/alpine)
+  alpine (docker.io/library/alpine => mirror..com/docker.io/alpine)
     - 3.19
     - 3.20
 
-  nginx (docker.io/library/nginx => hub.wiolfi.net/mirror/library/nginx)
+  nginx (docker.io/library/nginx => mirror..com/docker.io/nginx)
     - 1.20.0
     - 1.20.1
     - 1.21.0
