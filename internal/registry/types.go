@@ -1,19 +1,21 @@
 package registry
 
-type DockerHubTag struct {
-	Name      string `json:"name"`
-	MediaType string `json:"media_type"`
-	Digest    string `json:"digest"`
+type SourceTag struct {
+	Name      string
+	MediaType string
+	Digest    string
 }
 
-type DockerHubTagsResponse struct {
-	Count   int            `json:"count"`
-	Results []DockerHubTag `json:"results"`
+type SourceClient interface {
+	ListTags(repository string) ([]SourceTag, error)
+	GetManifestMediaType(repository, tag string) (string, error)
+	SetProxy(proxyURL string)
 }
 
 type HarborArtifact struct {
-	Digest string      `json:"digest"`
-	Tags   []HarborTag `json:"tags"`
+	Digest    string      `json:"digest"`
+	Tags      []HarborTag `json:"tags"`
+	MediaType string      `json:"media_type"`
 }
 
 type HarborTag struct {

@@ -37,10 +37,9 @@ func runSync(cmd *cobra.Command, args []string) {
 
 	logger.Info("Config loaded successfully")
 
-	proxy := cfg.GetProxy()
+	sourceClient := registry.NewSourceClient()
 
-	dockerHub := registry.NewDockerHubClient(proxy)
-	s := syncer.NewSyncer(dockerHub, nil, &cfg.Sync, cfg)
+	s := syncer.NewSyncer(sourceClient, nil, &cfg.Sync, cfg)
 	defer s.Close()
 
 	logger.Info("Start sync, %d rules in total", len(rules))
@@ -49,24 +48,49 @@ func runSync(cmd *cobra.Command, args []string) {
 
 	for i, rule := range rules {
 		destPr := config.ParseRef(rule.Dest)
-		harbor := registry.NewHarborClient(destPr.Registry, proxy)
+		harbor := registry.NewHarborClient(destPr.Registry)
 		s.SetHarborClient(harbor)
 
-		label := rule.Name
-		if label == "" {
-			label = rule.Source
+		result, err := s.SyncRuleDetailed(rule)
+		if err != nil {
+			label := rule.Name
+			if label == "" {
+				label = rule.Source
+			}
+			logger.Error("[Rule %d/%d] %s => %s - Error: %v", i+1, len(rules), label, rule.Dest, err)
+			fmt.Println()
+			continue
 		}
-		logger.Info("[Rule %d/%d] %s => %s", i+1, len(rules), label, rule.Dest)
 
-		stats := s.SyncRule(rule)
-		totalStats.Add(stats)
+		printSyncHeader(i+1, len(rules), rule, result)
+		printSyncBody(result)
+		fmt.Println()
+
+		totalStats.Add(result.Stats)
 	}
 
-	logger.Info("Sync complete: Success=%d Failed=%d Exist=%d Skip=%d",
-		totalStats.Success, totalStats.Failed, totalStats.Exist, totalStats.Skipped)
+	logger.Info("Sync complete: Success=%d Failed=%d Exist=%d Schema1=%d",
+		totalStats.Success, totalStats.Failed, totalStats.Exist, totalStats.Schema1)
 
 	if totalStats.Failed > 0 {
 		fmt.Println()
 		logger.Error("There were %d failed syncs", totalStats.Failed)
 	}
+}
+
+func printSyncHeader(idx, total int, rule config.Rule, result *syncer.SyncResult) {
+	printRuleBoxHeader(idx, total, rule, headerOptions{
+		ShowSource: true,
+		TagMode:    result.TagMode,
+		ModeSuffix: "(exact match)",
+		TagRegex:   result.TagRegex,
+		TotalTags:  result.TotalTags,
+	})
+}
+
+func printSyncBody(result *syncer.SyncResult) {
+	printTagGroup(cGreen+"✓ Synced"+cReset, result.ToSync, cGreen)
+	printTagGroup(cMagenta+"↻ Updated"+cReset, result.Updated, cMagenta)
+	printTagGroup(cYellow+"● Already exist"+cReset, result.Exist, cYellow)
+	printTagGroup(cRed+"⊘ Schema1 skipped"+cReset, result.Schema1, cRed)
 }

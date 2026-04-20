@@ -126,10 +126,20 @@ func ParseRef(ref string) ParsedRef {
 	case 1:
 		return ParsedRef{Name: parts[0]}
 	case 2:
+		if isRegistry(parts[0]) {
+			return ParsedRef{Registry: parts[0], Name: parts[1]}
+		}
 		return ParsedRef{Project: parts[0], Name: parts[1]}
 	default:
-		return ParsedRef{Registry: parts[0], Project: parts[1], Name: parts[2]}
+		if isRegistry(parts[0]) {
+			return ParsedRef{Registry: parts[0], Project: parts[1], Name: parts[2]}
+		}
+		return ParsedRef{Project: parts[0], Name: parts[1] + "/" + parts[2]}
 	}
+}
+
+func isRegistry(part string) bool {
+	return strings.Contains(part, ".") || strings.Contains(part, ":")
 }
 
 func BuildRef(pr ParsedRef, tag string) string {

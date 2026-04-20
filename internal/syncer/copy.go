@@ -3,7 +3,8 @@ package syncer
 import (
 	"context"
 	"fmt"
-	"os"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/containers/image/v5/copy"
@@ -14,6 +15,13 @@ import (
 	"github.com/wolfbolin/sync-docker/internal/config"
 	"github.com/wolfbolin/sync-docker/internal/logger"
 )
+
+var errSchema1 = fmt.Errorf("schema1 image skipped")
+
+func isSchema1Error(err error) bool {
+	return strings.Contains(err.Error(), "schema1") ||
+		strings.Contains(err.Error(), "would change the manifest")
+}
 
 func newPolicyContext() (*signature.PolicyContext, error) {
 	policy := &signature.Policy{
@@ -40,6 +48,10 @@ func (s *Syncer) copyImage(srcRef, dstRef string, rule config.Rule) error {
 			return nil
 		}
 
+		if isSchema1Error(lastErr) {
+			return errSchema1
+		}
+
 		logger.Error("  Attempt %d failed: %v", attempt, lastErr)
 	}
 
@@ -59,27 +71,22 @@ func (s *Syncer) doCopy(srcRef, dstRef string, rule config.Rule) error {
 		return fmt.Errorf("parse destination ref: %w", err)
 	}
 
-	if rule.Proxy {
-		if proxy := s.cfg.GetProxy(); proxy != "" {
-			os.Setenv("HTTPS_PROXY", proxy)
-			os.Setenv("HTTP_PROXY", proxy)
-		}
-		if noProxy := s.cfg.GetNoProxy(); noProxy != "" {
-			os.Setenv("NO_PROXY", noProxy)
-			os.Setenv("no_proxy", noProxy)
-		}
-	} else {
-		os.Unsetenv("HTTPS_PROXY")
-		os.Unsetenv("HTTP_PROXY")
-		os.Unsetenv("NO_PROXY")
-		os.Unsetenv("no_proxy")
-	}
-
 	logger.Debug("  copy.Image: docker://%s => docker://%s (proxy=%v)", srcRef, dstRef, rule.Proxy)
 
+	sourceCtx := &types.SystemContext{}
+	destCtx := &types.SystemContext{}
+
+	if rule.Proxy && s.proxyURL != "" {
+		proxyURL, err := url.Parse(s.proxyURL)
+		if err != nil {
+			return fmt.Errorf("parse proxy URL %q: %w", s.proxyURL, err)
+		}
+		sourceCtx.DockerProxyURL = proxyURL
+	}
+
 	options := &copy.Options{
-		SourceCtx:          &types.SystemContext{},
-		DestinationCtx:     &types.SystemContext{},
+		SourceCtx:          sourceCtx,
+		DestinationCtx:     destCtx,
 		ImageListSelection: copy.CopyAllImages,
 		PreserveDigests:    true,
 	}

@@ -4,13 +4,15 @@
 
 SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.io、quay.io 等）的镜像自动同步到私有 Harbor 仓库的命令行工具。
 
-核心使用场景：在内网或受限网络环境中，通过代理从公共仓库拉取镜像，推送到内部 Harbor 仓库供内网使用。支持增量同步（仅同步目标不存在的标签）、失败重试、多架构镜像复制。
+核心使用场景：在内网或受限网络环境中，通过代理从公共仓库拉取镜像，推送到内部 Harbor 仓库供内网使用。支持增量同步（仅同步目标不存在的标签）、失败重试、多架构镜像复制、镜像清理（删除不匹配和 schema1 镜像）。
 
 ## 技术栈
 
 - **语言**: Go 1.25+
 - **CLI 框架**: [cobra](https://github.com/spf13/cobra)
-- **镜像复制**: [containers/image v5](https://github.com/containers/image) — skopeo 的底层库，直接调用 `copy.Image()` API，无需安装 skopeo 二进制
+- **镜像操作**: [containers/image v5](https://github.com/containers/image) — skopeo 的底层库
+  - `copy.Image()` — 镜像复制，无需安装 skopeo 二进制
+  - `docker.GetRepositoryTags()` — 源标签列表获取，自动处理 OCI v2 Auth 认证流程
 - **配置解析**: [gopkg.in/yaml.v3](https://gopkg.in/yaml.v3)
 - **构建约束**: 必须使用 `-tags "containers_image_openpgp"` 编译，以使用纯 Go OpenPGP 实现替代 CGO 依赖的 GPGME
 
@@ -22,19 +24,21 @@ SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.i
 │   ├── root.go                          # 根命令，定义 -c/--config 全局参数
 │   ├── sync.go                          # sync 子命令 - 执行镜像同步
 │   ├── check.go                         # check 子命令 - 预览匹配结果（dry run）
-│   └── list.go                          # list 子命令 - 列出目标仓库已有标签
+│   ├── list.go                          # list 子命令 - 列出目标仓库已有标签
+│   └── delete.go                        # delete 子命令 - 删除不匹配和 schema1 镜像
 ├── internal/
 │   ├── config/
 │   │   ├── config.go                    # 配置结构体定义（Config, Rule, SyncConfig）
 │   │   └── loader.go                    # 配置加载、校验、规则过滤、镜像引用解析
 │   ├── registry/
-│   │   ├── types.go                     # API 响应类型（DockerHubTag, HarborArtifact, HarborTagInfo 等）
-│   │   ├── dockerhub.go                 # Docker Hub API v2 客户端（带内存缓存）
-│   │   └── harbor.go                    # Harbor API v2 客户端
+│   │   ├── types.go                     # SourceClient 接口、SourceTag、Harbor 类型
+│   │   ├── client.go                    # 源客户端工厂（NewSourceClient）
+│   │   ├── containers_image.go          # 基于 containers/image 的统一源客户端
+│   │   └── harbor.go                    # Harbor API v2 客户端（含认证）
 │   ├── syncer/
-│   │   ├── types.go                     # SyncStats, CheckResult 类型定义
-│   │   ├── syncer.go                    # 核心同步引擎（标签解析、digest 比较）
-│   │   └── copy.go                      # 镜像复制（containers/image 封装、重试、代理）
+│   │   ├── types.go                     # SyncStats, DeleteStats, CheckResult, DeleteResult 类型
+│   │   ├── syncer.go                    # 核心引擎（同步、检查、删除分析、标签解析）
+│   │   └── copy.go                      # 镜像复制（containers/image 封装、重试、代理、schema1 跳过）
 │   └── logger/
 │       └── logger.go                    # 彩色日志工具（INFO/WARN/ERROR/FATAL/DEBUG）
 ├── config.yaml.example                  # 配置文件示例
@@ -51,26 +55,37 @@ SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.i
 config.Load() ── 校验 ── FilterRules() ── 按 name 过滤规则
     │
     ▼
-cmd (sync/check/list)
+cmd (sync/check/list/delete)
     │
-    ├── registry.DockerHubClient ── Docker Hub API ── 获取源镜像标签列表
-    ├── registry.HarborClient    ── Harbor API v2   ── 获取目标已有标签列表
+    ├── registry.ContainersImageClient ── containers/image docker.GetRepositoryTags() ── 获取源标签列表
+    │   └── 自动处理 OCI v2 Auth（Bearer token/Basic/匿名回退）
+    │   └── 从 ~/.docker/config.json 读取认证信息
+    │   └── 通过 SetProxy() / DockerProxyURL 控制代理（不依赖环境变量）
+    │
+    ├── registry.HarborClient ── Harbor API v2 ── 获取目标标签列表 / 删除镜像
+    │   └── 从 ~/.docker/config.json 读取 Harbor 认证信息
     │
     ▼
 syncer.Syncer
     │
-    ├── resolveTags()     ── 对比源标签与目标标签，确定待同步列表
-    │   ├── tags 模式     ── 精确匹配，跳过已存在
-    │   └── tag_regex 模式 ── 正则过滤 + V1 manifest 跳过 + 已存在跳过
+    ├── resolveTags()          ── 对比源标签与目标标签，确定待同步列表
+    │   ├── tags 模式          ── 精确匹配，跳过已存在
+    │   └── tag_regex 模式     ── 正则过滤 + 已存在跳过
     │
-    ├── copyImage()       ── 失败重试（可配置次数和间隔）
-    │   └── doCopy()      ── 调用 containers/image copy.Image()
-    │       ├── 设置 HTTPS_PROXY / HTTP_PROXY（规则级代理开关）
-    │       ├── 设置 NO_PROXY（代理排除列表）
+    ├── copyImage()            ── 失败重试（可配置次数和间隔）
+    │   └── doCopy()           ── 调用 containers/image copy.Image()
+    │       ├── SourceCtx.DockerProxyURL（规则级代理，仅源端）
+    │       ├── DestinationCtx 不设置代理（推送直连）
     │       ├── ImageListSelection: CopyAllImages（多架构）
-    │       └── PreserveDigests: true（保留摘要）
+    │       ├── PreserveDigests: true（保留摘要）
+    │       └── schema1 镜像自动跳过（返回 errSchema1）
     │
-    └── 返回 SyncStats    ── Success / Failed / Exist / Skipped
+    ├── AnalyzeDeleteRule()    ── 分析目标仓库中应删除的镜像
+    │   ├── schema1 检测       ── 识别并标记 V1 manifest
+    │   ├── tags 模式          ── 保留列表中的标签，标记其余为 Unmatched
+    │   └── tag_regex 模式     ── 保留匹配正则的标签，标记其余为 Unmatched
+    │
+    └── 返回统计结果           ── SyncStats / DeleteStats / CheckResult / DeleteResult
 ```
 
 ## 配置模型
@@ -80,7 +95,7 @@ syncer.Syncer
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `proxy` | string | 全局 HTTP 代理地址，兜底 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量 |
-| `no_proxy` | string | 代理排除列表，兜底 `NO_PROXY`/`no_proxy` 环境变量 |
+| `no_proxy` | string | 代理排除列表（保留字段，当前实现中代理仅作用于源端，目标端直连无需排除） |
 | `sync.retry` | int | 同步失败重试次数，默认 3 |
 | `sync.interval` | duration | 重试间隔，默认 5s |
 
@@ -107,10 +122,16 @@ syncer.Syncer
 
 ### 代理机制
 
-- `rule.Proxy = true` 时：设置 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量 + `NO_PROXY` 排除列表
-- `rule.Proxy = false` 时：清除所有代理相关环境变量
-- `containers/image` 库通过 `http.ProxyFromEnvironment` 读取环境变量，`NO_PROXY` 中的地址不走代理
-- 典型用法：`no_proxy` 中配置目标 Harbor 地址，实现"拉取走代理、推送不走代理"
+- 代理通过 `SystemContext.DockerProxyURL` 显式传递给 `containers/image` 库，不依赖环境变量
+- `rule.Proxy = true` 时：将全局 `proxy` URL 设置到 `SourceCtx.DockerProxyURL`，源仓库请求走代理
+- `rule.Proxy = false` 时：不设置 `DockerProxyURL`，源仓库请求直连
+- `DestinationCtx` 始终不设置代理，推送到 Harbor 直连
+- **不使用环境变量控制代理的原因**：Go 标准库 `http.ProxyFromEnvironment` 内部使用 `sync.Once` 缓存代理配置，仅在进程首次调用时读取环境变量，后续修改环境变量不会生效，导致多规则场景下代理状态不可切换
+
+### 认证机制
+
+- **源仓库认证**：`containers/image` 库自动从 `~/.docker/config.json` 读取认证信息，支持 Bearer token 自动获取/刷新、Basic auth、匿名回退
+- **Harbor 认证**：`HarborClient` 从 `~/.docker/config.json` 读取对应 registry 的 Basic Auth 凭证，所有 API 请求（GET/DELETE）携带 `Authorization` 头
 
 ## CLI 命令
 
@@ -118,18 +139,18 @@ syncer.Syncer
 
 ### sync
 
-执行镜像同步。对每条规则，从 destination 解析 Harbor 地址创建客户端，查询已有标签，仅同步不存在的标签。
+执行镜像同步。对每条规则，从 destination 解析 Harbor 地址创建客户端，查询已有标签，仅同步不存在的标签。schema1 格式镜像自动跳过。
 
 ```
-sync-docker sync [-c config.yaml] [-r alpine,nginx]
+image-syncer sync [-c config.yaml] [-r alpine,nginx]
 ```
 
 ### check
 
-预览规则匹配结果（dry run）。展示 Box 格式的规则信息和标签状态（待同步/已存在/跳过 V1），标签超过 30 个时截断显示。
+预览规则匹配结果（dry run）。展示 Box 格式的规则信息和标签状态（待同步/已存在/需更新），标签超过 30 个时截断显示。
 
 ```
-sync-docker check [-c config.yaml] [-r alpine]
+image-syncer check [-c config.yaml] [-r alpine]
 ```
 
 ### list
@@ -137,18 +158,55 @@ sync-docker check [-c config.yaml] [-r alpine]
 列出规则对应的目标仓库已有标签。从规则的 destination 中解析 Harbor 地址和项目。
 
 ```
-sync-docker list [-c config.yaml] [-r alpine]
+image-syncer list [-c config.yaml] [-r alpine]
 ```
 
+### delete
+
+删除目标仓库中不匹配规则和 schema1 格式的镜像。支持 dry-run 模式预览。展示 Box 格式的规则信息和删除计划。
+
+```
+image-syncer delete [-c config.yaml] [-r alpine] [--dry-run]
+```
+
+删除逻辑：
+- **schema1 镜像**：始终删除（`media_type` 为 `v1+json` 或 `v1+prettyjws`）
+- **tags 模式**：保留列表中声明的标签，删除不在列表中的标签
+- **tag_regex 模式**：保留匹配正则的标签，删除不匹配的标签
+- **无 tags/tag_regex**：仅删除 schema1 镜像
+
 ## 关键实现细节
+
+### 源标签获取（ContainersImageClient）
+
+使用 `containers/image` 库的 `docker.GetRepositoryTags()` 统一获取所有源仓库的标签列表：
+
+```go
+sysCtx := c.buildSysCtx()  // 根据 proxyURL 设置 DockerProxyURL
+ref, _ := alltransports.ParseImageName("docker://" + repository)
+tagNames, _ := docker.GetRepositoryTags(ctx, sysCtx, ref)
+```
+
+- 自动处理 OCI v2 Auth 认证流程（Bearer token 获取/刷新、Basic auth、匿名回退）
+- 从 `~/.docker/config.json` 读取认证信息
+- 支持所有 OCI 兼容仓库（Docker Hub、registry.k8s.io、quay.io、GHCR、阿里云 ACR 等）
+- 内置 `sync.Mutex` + `map` 内存缓存
+- 代理通过 `SetProxy()` 方法设置，内部解析为 `*url.URL` 并写入 `SystemContext.DockerProxyURL`
 
 ### 镜像复制（doCopy）
 
 ```go
-// 等价于: skopeo copy --all --preserve-digests docker://src docker://dst
+sourceCtx := &types.SystemContext{}
+destCtx := &types.SystemContext{}
+
+if rule.Proxy && s.proxyURL != "" {
+    proxyURL, _ := url.Parse(s.proxyURL)
+    sourceCtx.DockerProxyURL = proxyURL  // 仅源端走代理
+}
+
 options := &copy.Options{
-    SourceCtx:          &types.SystemContext{},
-    DestinationCtx:     &types.SystemContext{},
+    SourceCtx:          sourceCtx,
+    DestinationCtx:     destCtx,
     ImageListSelection: copy.CopyAllImages,
     PreserveDigests:    true,
 }
@@ -157,28 +215,32 @@ _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
 
 - 签名策略使用 `InsecureAcceptAnything`（接受所有签名）
 - `PolicyContext` 在 `NewSyncer` 时创建，`Close()` 时销毁
-- 代理通过环境变量控制，每次 `doCopy` 调用前根据 `rule.Proxy` 设置/清除
-
-### Docker Hub API 客户端
-
-- 调用 `https://hub.docker.com/v2/namespaces/{project}/repositories/{name}/tags`
-- 分页获取（每页 100 条）
-- 内置 `sync.Mutex` + `map` 内存缓存，同一镜像不重复请求
+- 代理通过 `SourceCtx.DockerProxyURL` 显式传递，仅源端走代理，目标端直连
+- schema1 镜像复制时 `PreserveDigests` 会冲突，通过 `isSchema1Error()` 检测并跳过
 
 ### Harbor API 客户端
 
 - 调用 Harbor v2 API：`/api/v2.0/projects/{project}/repositories/{name}/artifacts`
 - 仓库名中的 `/` 使用 `%252F` 双重 URL 编码（Harbor 特殊要求）
 - 每条规则独立创建 HarborClient（因为不同规则可能指向不同 Harbor 实例）
+- 从 `~/.docker/config.json` 自动读取认证信息，所有请求携带 `Authorization` 头
+- 支持 `ListArtifacts()`（含 media_type）、`DeleteArtifact()`、`ListRepositories()` 等方法
 
 ### 标签过滤逻辑（resolveTags）
 
 1. **tags 模式**：遍历指定标签列表，跳过目标已存在的标签
 2. **tag_regex 模式**：
-   - 从 Docker Hub API 获取源镜像全部标签
+   - 从源仓库获取全部标签
    - 正则匹配过滤
-   - 跳过 V1 manifest（`application/vnd.docker.distribution.manifest.v1+json` 和 `v1+prettyjws`）
    - 跳过目标已存在的标签
+
+### 删除分析逻辑（AnalyzeDeleteRule）
+
+1. 获取目标仓库所有 artifacts（含 media_type）
+2. schema1 检测：`media_type` 为 `v1+json` 或 `v1+prettyjws` 的标记为删除
+3. tags 模式：不在列表中的标签标记为 Unmatched
+4. tag_regex 模式：不匹配正则的标签标记为 Unmatched
+5. 返回 `DeleteResult`（Schema1 列表、Unmatched 列表、Kept 列表）
 
 ### 配置校验（Validate）
 
@@ -198,16 +260,16 @@ _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
 
 ```bash
 # 本地构建（必须使用 containers_image_openpgp tag）
-CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o sync-docker .
+CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o image-syncer .
 
 # Docker 构建
-docker build -t sync-docker:latest .
+docker build -t image-syncer:latest .
 
 # 运行
 docker run --rm \
-  -v /path/to/config.yaml:/etc/sync-docker/config.yaml:ro \
+  -v /path/to/config.yaml:/etc/image-syncer/config.yaml:ro \
   -v ~/.docker/config.json:/root/.docker/config.json:ro \
-  sync-docker:latest
+  image-syncer:latest
 ```
 
-Docker 运行时需要挂载 `~/.docker/config.json` 以提供 Harbor 写入认证。
+Docker 运行时需要挂载 `~/.docker/config.json` 以提供源仓库和 Harbor 的认证信息。

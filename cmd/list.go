@@ -34,14 +34,12 @@ func runList(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to filter rules: %v", err)
 	}
 
-	proxy := cfg.GetProxy()
-
 	fmt.Printf("List images for %d rule(s):\n", len(rules))
 	fmt.Println("========================================")
 
 	for _, rule := range rules {
 		destPr := config.ParseRef(rule.Dest)
-		harbor := registry.NewHarborClient(destPr.Registry, proxy)
+		harbor := registry.NewHarborClient(destPr.Registry)
 
 		label := rule.Name
 		if label == "" {

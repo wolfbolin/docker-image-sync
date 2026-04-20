@@ -11,6 +11,11 @@ sync:
   interval: 5s
 
 # 同步规则 - 每条规则独立配置源和目标
+# source 格式: registry/project/name
+#   - Docker Hub: docker.io/library/alpine
+#   - GHCR: ghcr.io/project/name
+#   - registry.k8s.io: registry.k8s.io/project/name
+#   - Quay: quay.io/project/name
 rules:
   - name: "ubuntu"
     source: "docker.io/library/ubuntu"
@@ -23,3 +28,27 @@ rules:
     destination: "hub.wiolfi.net:23333/docker.io/alpine"
     proxy: true
     tag_regex: '^\d+\.\d+(\.\d+)?$'
+
+  - name: "coredns"
+    source: "registry.k8s.io/coredns/coredns"
+    destination: "hub.wiolfi.net:23333/registry.k8s.io/coredns/coredns"
+    proxy: true
+    tag_regex: '^v\d+\.\d+\.\d+$'
+
+  - name: "pause"
+    source: "registry.k8s.io/pause"
+    destination: "hub.wiolfi.net:23333/registry.k8s.io/pause"
+    proxy: true
+    tags: ["3.9", "3.10"]
+
+  - name: "operator"
+    source: "quay.io/prometheus-operator/prometheus-operator"
+    destination: "hub.wiolfi.net:23333/quay.io/prometheus-operator/prometheus-operator"
+    proxy: true
+    tag_regex: '^v\d+\.\d+\.\d+$'
+
+  - name: "actions-runner"
+    source: "ghcr.io/actions/actions-runner"
+    destination: "hub.wiolfi.net:23333/ghcr.io/actions/actions-runner"
+    proxy: true
+    tags: ["2.321.0"]
