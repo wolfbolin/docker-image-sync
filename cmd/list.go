@@ -34,18 +34,11 @@ func runList(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to filter rules: %v", err)
 	}
 
-	fmt.Printf("List images for %d rule(s):\n", len(rules))
-	fmt.Println("========================================")
+	total := len(rules)
 
-	for _, rule := range rules {
+	for i, rule := range rules {
 		destPr := config.ParseRef(rule.Dest)
 		harbor := registry.NewHarborClient(destPr.Registry)
-
-		label := rule.Name
-		if label == "" {
-			label = rule.Source
-		}
-		fmt.Printf("\n  %s (%s => %s)\n", label, rule.Source, rule.Dest)
 
 		tags, err := harbor.ListTags(destPr.Project, destPr.Name)
 		if err != nil {
@@ -53,15 +46,35 @@ func runList(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		if len(tags) == 0 {
-			fmt.Println("    (no tags)")
-			continue
+		tagMode := ""
+		if len(rule.Tags) > 0 {
+			tagMode = "tags"
+		} else if rule.TagRegex != "" {
+			tagMode = "tag_regex"
 		}
 
-		for _, tag := range tags {
-			fmt.Printf("    - %s\n", tag)
-		}
+		printListHeader(i+1, total, rule, tagMode, len(tags))
+		printListBody(tags)
+		fmt.Println()
 	}
+}
 
-	fmt.Println("\n========================================")
+func printListHeader(idx, total int, rule config.Rule, tagMode string, tagCount int) {
+	opts := headerOptions{
+		ShowSource: true,
+		TagMode:    tagMode,
+		TotalTags:  tagCount,
+	}
+	if tagMode == "tag_regex" {
+		opts.TagRegex = rule.TagRegex
+	}
+	printRuleBoxHeader(idx, total, rule, opts)
+}
+
+func printListBody(tags []string) {
+	if len(tags) == 0 {
+		fmt.Printf("  %s(no tags)%s\n", cDim, cReset)
+		return
+	}
+	printTagGroup(cCyan+"● Tags"+cReset, tags, cCyan)
 }
