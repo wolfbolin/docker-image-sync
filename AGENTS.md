@@ -22,11 +22,10 @@ SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.i
 ├── main.go                              # 入口，调用 cmd.Execute()
 ├── cmd/
 │   ├── root.go                          # 根命令，定义 -c/--config 全局参数
-│   ├── sync.go                          # sync 子命令 - 执行镜像同步（三阶段输出）
+│   ├── sync.go                          # sync 子命令 - 执行镜像同步（三阶段卡片输出）
 │   ├── check.go                         # check 子命令 - 预览匹配结果（dry run）
 │   ├── list.go                          # list 子命令 - 列出目标仓库已有标签
-│   ├── delete.go                        # delete 子命令 - 删除不匹配镜像
-│   └── ui.go                            # 终端 UI 工具（Box/卡片格式输出、标签分组显示）
+│   └── delete.go                        # delete 子命令 - 删除不匹配镜像
 ├── internal/
 │   ├── config/
 │   │   ├── config.go                    # 配置结构体定义（Config, Rule, SyncConfig）
@@ -41,7 +40,8 @@ SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.i
 │   │   ├── syncer.go                    # 核心引擎（准备/执行同步、检查、删除分析、标签解析）
 │   │   └── copy.go                      # 镜像复制（containers/image 封装、重试、代理、schema1 适配）
 │   └── logger/
-│       └── logger.go                    # 彩色日志工具（INFO/WARN/ERROR/FATAL/DEBUG）
+│       ├── logger.go                    # 彩色日志工具、标签分组显示、颜色常量
+│       └── message_card.go              # 卡片格式输出（PrintInfoCard）
 ├── config.yaml.example                  # 配置文件示例
 ├── Dockerfile                           # 多阶段 Docker 构建
 └── go.mod / go.sum                      # Go 模块定义
@@ -147,10 +147,12 @@ syncer.Syncer
 
 执行镜像同步。对每条规则，从 destination 解析 Harbor 地址创建客户端，查询已有标签，仅同步不存在的标签。schema1 格式镜像通过禁用 `PreserveDigests` 适配复制。
 
-输出采用三阶段卡片式展示：
+输出采用三阶段卡片式展示（通过 `logger.PrintInfoCard` 实现）：
 1. **基础信息卡片**：同步开始前打印，包含 Name、Source、Destination、Mode、Pattern
 2. **任务统计卡片**：获取标签信息后打印，包含 Total tags、Synced tags、Existed tags
 3. **同步结果卡片**：镜像复制完成后打印，包含 New、Updated、Failed
+
+标签分组通过 `logger.PrintTagGroup` 输出，超过 30 个标签时自动截断。
 
 ```
 image-syncer sync [-c config.yaml] [-r alpine,nginx]
@@ -158,7 +160,7 @@ image-syncer sync [-c config.yaml] [-r alpine,nginx]
 
 ### check
 
-预览规则匹配结果（dry run）。展示 Box 格式的规则信息和标签状态（待同步/已存在/需更新），标签超过 30 个时截断显示。
+预览规则匹配结果（dry run）。通过 `logger.PrintInfoCard` 展示卡片格式的规则信息，通过 `logger.PrintTagGroup` 展示标签状态（待同步/已存在/需更新），标签超过 30 个时截断显示。
 
 ```
 image-syncer check [-c config.yaml] [-r alpine]
@@ -166,7 +168,7 @@ image-syncer check [-c config.yaml] [-r alpine]
 
 ### list
 
-列出规则对应的目标仓库已有标签。从规则的 destination 中解析 Harbor 地址和项目。
+列出规则对应的目标仓库已有标签。从规则的 destination 中解析 Harbor 地址和项目。通过 `logger.PrintInfoCard` 输出规则信息卡片。
 
 ```
 image-syncer list [-c config.yaml] [-r alpine]
@@ -174,7 +176,7 @@ image-syncer list [-c config.yaml] [-r alpine]
 
 ### delete
 
-删除目标仓库中不匹配规则的镜像。支持 dry-run 模式预览。展示 Box 格式的规则信息和删除计划。
+删除目标仓库中不匹配规则的镜像。支持 dry-run 模式预览。通过 `logger.PrintInfoCard` 展示卡片格式的规则信息和删除计划。
 
 ```
 image-syncer delete [-c config.yaml] [-r alpine] [--dry-run]
@@ -184,6 +186,73 @@ image-syncer delete [-c config.yaml] [-r alpine] [--dry-run]
 - **tags 模式**：保留列表中声明的标签，删除不在列表中的标签
 - **tag_regex 模式**：保留匹配正则的标签，删除不匹配的标签
 - **无 tags/tag_regex**：不删除任何镜像
+
+## logger 包
+
+`internal/logger` 提供统一的终端输出工具，所有子命令通过该包输出卡片和标签信息。
+
+### 日志函数
+
+| 函数 | 说明 |
+|------|------|
+| `Info(format, args...)` | 白色 [INFO] 日志 |
+| `Done(format, args...)` | 绿色 [DONE] 日志 |
+| `Warn(format, args...)` | 黄色 [WARN] 日志 |
+| `Error(format, args...)` | 红色 [ERROR] 日志（输出到 stderr） |
+| `Fatal(format, args...)` | 红色 [FATAL] 日志后退出进程 |
+| `Debug(format, args...)` | 蓝色 [DEBUG] 日志 |
+
+### 卡片输出
+
+```go
+logger.PrintInfoCard(title string, kvs map[string]string)
+```
+
+输出格式化的卡片信息，自动对齐键值对。各子命令直接调用此函数输出规则信息卡片：
+
+```go
+kvs := map[string]string{
+    "Name":        rule.Name,
+    "Source":      rule.Source,
+    "Destination": rule.Dest,
+    "Mode":        "tags (exact match)",
+}
+logger.PrintInfoCard(fmt.Sprintf("RULE %d/%d", idx, total), kvs)
+```
+
+### 标签分组显示
+
+```go
+logger.PrintTagGroup(label string, tags []string)
+```
+
+格式化输出标签组，超过 30 个标签时自动截断显示。标签不带颜色参数，由调用方在 label 中嵌入颜色。
+
+```go
+logger.PrintTagGroup(logger.ColorGreen+"[+] Synced"+logger.ColorReset, result.ToSync)
+```
+
+### 标签列表格式化
+
+```go
+logger.FormatTagList(tags []string) string
+```
+
+将标签列表格式化为逗号分隔字符串，超过 10 个标签时截断并显示剩余数量。
+
+### 颜色常量
+
+| 常量 | ANSI 代码 | 用途 |
+|------|-----------|------|
+| `ColorReset` | `\033[0m` | 重置颜色 |
+| `ColorRed` | `\033[0;31m` | 错误/删除 |
+| `ColorGreen` | `\033[0;32m` | 成功/新增 |
+| `ColorYellow` | `\033[0;33m` | 警告/已存在 |
+| `ColorBlue` | `\033[0;34m` | 调试信息 |
+| `ColorCyan` | `\033[0;36m` | 信息/列表 |
+| `ColorMagenta` | `\033[0;35m` | 更新 |
+| `ColorBold` | `\033[1m` | 强调 |
+| `ColorDim` | `\033[2m` | 暗淡/次要 |
 
 ## 关键实现细节
 
@@ -322,6 +391,12 @@ _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
 ```bash
 # 本地构建（必须使用 containers_image_openpgp tag）
 CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o bin/image-syncer .
+
+# 直接运行（必须使用 containers_image_openpgp tag）
+CGO_ENABLED=0 go run -tags "containers_image_openpgp" .
+
+# 静态分析
+CGO_ENABLED=0 go vet -tags "containers_image_openpgp" .
 
 # Docker 构建
 docker build -t image-syncer:latest .

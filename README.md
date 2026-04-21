@@ -76,11 +76,14 @@
 ## 构建
 
 ```bash
-# 本地构建
-CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o image-syncer .
+# 本地构建（输出到 bin 目录）
+mkdir -p bin && CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o bin/image-syncer .
 
-# 交叉编译 Linux amd64
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "containers_image_openpgp" -o image-syncer .
+# 交叉编译 Linux amd64（输出到 bin 目录）
+mkdir -p bin && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "containers_image_openpgp" -o bin/image-syncer .
+
+# 直接运行
+CGO_ENABLED=0 go run -tags "containers_image_openpgp" .
 
 # Docker 多阶段构建
 docker build -t image-syncer:latest .
@@ -189,75 +192,128 @@ image-syncer delete -c config.yaml -r busybox
 ```
 [INFO] Config loaded successfully
 [INFO] Start sync, 2 rules in total
-[INFO] [Rule 1/2] alpine => harbor.example.com/docker.io/alpine
-[INFO]   Sync: docker.io/library/alpine:3.19 => harbor.example.com/docker.io/alpine:3.19
-[DONE]   ✓ Success
-[INFO] [Rule 2/2] coredns => harbor.example.com/registry.k8s.io/coredns/coredns
-[WARN]   Skip: v1.9.3 (up-to-date)
-[INFO]   Sync: registry.k8s.io/coredns/coredns:v1.10.0 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.10.0
-[DONE]   ✓ Success
-[INFO] Sync complete: Success=2 Failed=0 Exist=1 Skip=0
+
++-------- [RULE 1/2] -----------------------------------------------+
+|  Name        = alpine                                             |
+|  Source      = docker.io/library/alpine                           |
+|  Destination = harbor.example.com/docker.io/alpine                |
+|  Mode        = tags (exact match)                                 |
++-------------------------------------------------------------------+
++-------- [TASK STATS] ---------------------------------------------+
+|  Total tags   = 2                                                 |
+|  Synced tags  = 2                                                 |
+|  Existed tags = 0                                                 |
++-------------------------------------------------------------------+
+[INFO] Syncing docker.io/library/alpine:3.19 => harbor.example.com/docker.io/alpine:3.19
+[INFO] Syncing docker.io/library/alpine:3.20 => harbor.example.com/docker.io/alpine:3.20
++-------- [RESULT] -------------------------------------------------+
+|  New     = 2                                                      |
+|  Updated = 0                                                      |
+|  Failed  = 0                                                      |
++-------------------------------------------------------------------+
+  [+] Synced (2): 3.19  3.20
+  [~] Updated (0): -
+  [=] Already exist (0): -
+
+
++-------- [RULE 2/2] -----------------------------------------------+
+|  Name        = coredns                                            |
+|  Source      = registry.k8s.io/coredns/coredns                    |
+|  Destination = harbor.example.com/registry.k8s.io/coredns/coredns |
+|  Mode        = tag_regex (exact match)                            |
+|  Pattern     = ^v1\.(28|29|30)\.[0-9]+$                           |
++-------------------------------------------------------------------+
++-------- [TASK STATS] ---------------------------------------------+
+|  Total tags   = 4                                                 |
+|  Synced tags  = 3                                                 |
+|  Existed tags = 1                                                 |
++-------------------------------------------------------------------+
+[INFO] Syncing registry.k8s.io/coredns/coredns:v1.28.5 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.28.5
+[INFO] Syncing registry.k8s.io/coredns/coredns:v1.29.3 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.29.3
+[INFO] Syncing registry.k8s.io/coredns/coredns:v1.30.0 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.30.0
+[WARN] Skipping registry.k8s.io/coredns/coredns:v1.9.3 (already exist)
++-------- [RESULT] -------------------------------------------------+
+|  New     = 3                                                      |
+|  Updated = 0                                                      |
+|  Failed  = 0                                                      |
++-------------------------------------------------------------------+
+  [+] Synced (3): v1.28.5  v1.29.3  v1.30.0
+  [~] Updated (0): -
+  [=] Already exist (1): v1.9.3
+
+[INFO] Sync complete: Success=5 Failed=0 Exist=1
 ```
 
 ### check 命令输出示例
 
 ```
-╭ Rule 1/2 ──────────────────────────────────────────────╮
-│ Name:        alpine                                    │
-│ Source:      docker.io/library/alpine                  │
-│ Destination: harbor.example.com/docker.io/alpine       │
-│ Mode:        tags (exact match)                        │
-╰──────────────────────────────────────────────────────────╯
-  ✓ Will sync (2):  3.19  3.20
-  ● Already exist (0):  -
-  ↻ Need update (0):  -
++-------- [RULE 1/2] -----------------------------------------------+
+|  Name        = alpine                                             |
+|  Source      = docker.io/library/alpine                           |
+|  Destination = harbor.example.com/docker.io/alpine                |
+|  Mode        = tags (exact match)                                 |
++-------------------------------------------------------------------+
+  [+] Will sync (2): 3.19  3.20
+  [~] Need update (0): -
+  [=] Already exist (0): -
 
-╭ Rule 2/2 ──────────────────────────────────────────────╮
-│ Name:        coredns                                   │
-│ Source:      registry.k8s.io/coredns/coredns           │
-│ Destination: harbor.example.com/registry.k8s.io/coredns/coredns │
-│ Mode:        tag_regex                                 │
-│ Pattern:     ^v1\.(28|29|30)\.[0-9]+$                  │
-│ Total tags:  42                                        │
-╰──────────────────────────────────────────────────────────╯
-  ✓ Will sync (3):  v1.28.5  v1.29.3  v1.30.0
-  ● Already exist (1):  v1.9.3
-  ↻ Need update (0):  -
+
++-------- [RULE 2/2] -----------------------------------------------+
+|  Name        = coredns                                            |
+|  Source      = registry.k8s.io/coredns/coredns                    |
+|  Destination = harbor.example.com/registry.k8s.io/coredns/coredns |
+|  Mode        = tag_regex (exact match)                            |
+|  Pattern     = ^v1\.(28|29|30)\.[0-9]+$                           |
+|  Total tags  = 42                                                 |
++-------------------------------------------------------------------+
+  [+] Will sync (3): v1.28.5  v1.29.3  v1.30.0
+  [~] Need update (0): -
+  [=] Already exist (1): v1.9.3
 ```
 
 ### delete 命令输出示例
 
 ```
-╭ Rule 1/1 ──────────────────────────────────────────────╮
-│ Name:        ubuntu                                    │
-│ Destination: harbor.example.com/docker.io/ubuntu       │
-│ Mode:        tags (keep listed only)                   │
-│ Keep tags:   22.04, 24.04                             │
-│ Total tags:  21                                        │
-│ Dry run:     true (no changes)                         │
-╰──────────────────────────────────────────────────────────╯
-  ✗ Schema1 (will delete) (0):  -
-  ✗ Unmatched (will delete) (19): 24.10  23.10  23.04  22.10  ...
-  ✓ Kept (2): 24.04  22.04
+[INFO] Config loaded successfully
+[INFO] Dry run mode - no changes will be made
+[INFO] Start delete, 1 rules in total
+
++-------- [RULE 1/1] -----------------------------------------------+
+|  Name        = ubuntu                                             |
+|  Destination = harbor.example.com/docker.io/ubuntu                |
+|  Mode        = tags (keep listed only)                            |
+|  Keep tags   = 22.04, 24.04                                       |
+|  Total tags  = 21                                                 |
+|  Dry run     = true (no changes)                                  |
++-------------------------------------------------------------------+
+  [-] Unmatched (will delete) (19): 24.10  23.10  23.04  22.10  22.04.1  20.04  18.04  16.04 ...
+  [=] Kept (2): 24.04  22.04
+
+[INFO] Delete complete: Deleted=0 Failed=0 Skipped=19
 ```
 
 ### list 命令输出示例
 
 ```
-List images for 2 rule(s):
-========================================
++-------- [RULE 1/2] -----------------------------------------------+
+|  Name        = alpine                                             |
+|  Source      = docker.io/library/alpine                           |
+|  Destination = harbor.example.com/docker.io/alpine                |
+|  Mode        = tags                                               |
+|  Total tags  = 2                                                  |
++-------------------------------------------------------------------+
+  ● Tags (2): 3.19  3.20
 
-  alpine (docker.io/library/alpine => harbor.example.com/docker.io/alpine)
-    - 3.19
-    - 3.20
 
-  coredns (registry.k8s.io/coredns/coredns => harbor.example.com/registry.k8s.io/coredns/coredns)
-    - v1.9.3
-    - v1.28.5
-    - v1.29.3
-    - v1.30.0
-
-========================================
++-------- [RULE 2/2] -----------------------------------------------+
+|  Name        = coredns                                            |
+|  Source      = registry.k8s.io/coredns/coredns                    |
+|  Destination = harbor.example.com/registry.k8s.io/coredns/coredns |
+|  Mode        = tag_regex                                          |
+|  Pattern     = ^v1\.(28|29|30)\.[0-9]+$                           |
+|  Total tags  = 4                                                  |
++-------------------------------------------------------------------+
+  ● Tags (4): v1.9.3  v1.28.5  v1.29.3  v1.30.0
 ```
 
 ## Docker 部署
@@ -276,6 +332,11 @@ docker run --rm \
 ```
 ├── main.go                         # 入口
 ├── cmd/                            # CLI 命令（sync, check, list, delete）
+│   ├── root.go                     # 根命令，定义 -c/--config 全局参数
+│   ├── sync.go                     # sync 子命令 - 执行镜像同步
+│   ├── check.go                    # check 子命令 - 预览匹配结果
+│   ├── list.go                     # list 子命令 - 列出目标仓库标签
+│   └── delete.go                   # delete 子命令 - 删除不匹配镜像
 ├── internal/
 │   ├── config/                     # 配置加载、校验、规则过滤、镜像引用解析
 │   ├── registry/
@@ -284,7 +345,7 @@ docker run --rm \
 │   │   ├── containers_image.go     # 基于 containers/image 的统一源客户端
 │   │   └── harbor.go               # Harbor API v2 客户端（含认证）
 │   ├── syncer/                     # 同步引擎、标签过滤、镜像复制、删除分析
-│   └── logger/                     # 日志输出
+│   └── logger/                     # 日志输出、卡片格式输出、标签分组显示
 ├── config.yaml.example             # 配置示例
 └── Dockerfile                      # 多阶段构建
 ```
