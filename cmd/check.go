@@ -65,17 +65,28 @@ func runCheck(cmd *cobra.Command, args []string) {
 }
 
 func printCheckHeader(idx, total int, rule config.Rule, result *syncer.CheckResult) {
-	printRuleBoxHeader(idx, total, rule, headerOptions{
-		ShowSource: true,
-		TagMode:    result.TagMode,
-		ModeSuffix: "(exact match)",
-		TagRegex:   result.TagRegex,
-		TotalTags:  result.TotalTags,
-	})
+	title := fmt.Sprintf("RULE %d/%d", idx, total)
+	kvs := make(map[string]string)
+
+	if rule.Name != "" {
+		kvs["Name"] = rule.Name
+	}
+	kvs["Source"] = rule.Source
+	kvs["Destination"] = rule.Dest
+
+	if result.TagMode == "tags" {
+		kvs["Mode"] = "tags (exact match)"
+	} else if result.TagMode == "tag_regex" {
+		kvs["Mode"] = "tag_regex (exact match)"
+		kvs["Pattern"] = result.TagRegex
+		kvs["Total tags"] = fmt.Sprintf("%d", result.TotalTags)
+	}
+
+	logger.PrintInfoCard(title, kvs)
 }
 
 func printCheckBody(result *syncer.CheckResult) {
-	printTagGroup(cGreen+"✓ Will sync"+cReset, result.ToSync, cGreen)
-	printTagGroup(cMagenta+"↻ Need update"+cReset, result.Updated, cMagenta)
-	printTagGroup(cYellow+"● Already exist"+cReset, result.Exist, cYellow)
+	logger.PrintTagGroup(logger.ColorGreen+"[+] Will sync"+logger.ColorReset, result.ToSync)
+	logger.PrintTagGroup(logger.ColorMagenta+"[~] Need update"+logger.ColorReset, result.Updated)
+	logger.PrintTagGroup(logger.ColorYellow+"[=] Already exist"+logger.ColorReset, result.Exist)
 }

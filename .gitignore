@@ -2,3 +2,4 @@
 bin/
 .vscode/
 config.yaml
+config-test.yaml

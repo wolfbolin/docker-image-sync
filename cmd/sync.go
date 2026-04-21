@@ -47,11 +47,13 @@ func runSync(cmd *cobra.Command, args []string) {
 	var totalStats syncer.SyncStats
 
 	for i, rule := range rules {
+		printSyncHeader(i+1, len(rules), rule)
+
 		destPr := config.ParseRef(rule.Dest)
 		harbor := registry.NewHarborClient(destPr.Registry)
 		s.SetHarborClient(harbor)
 
-		result, err := s.SyncRuleDetailed(rule)
+		result, err := s.PrepareSync(rule)
 		if err != nil {
 			label := rule.Name
 			if label == "" {
@@ -62,15 +64,17 @@ func runSync(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		printSyncHeader(i+1, len(rules), rule, result)
+		printSyncTaskStats(result)
+		s.ExecuteSync(result)
+		printSyncResult(result)
 		printSyncBody(result)
 		fmt.Println()
 
 		totalStats.Add(result.Stats)
 	}
 
-	logger.Info("Sync complete: Success=%d Failed=%d Exist=%d Schema1=%d",
-		totalStats.Success, totalStats.Failed, totalStats.Exist, totalStats.Schema1)
+	logger.Info("Sync complete: Success=%d Failed=%d Exist=%d",
+		totalStats.Success, totalStats.Failed, totalStats.Exist)
 
 	if totalStats.Failed > 0 {
 		fmt.Println()
@@ -78,19 +82,53 @@ func runSync(cmd *cobra.Command, args []string) {
 	}
 }
 
-func printSyncHeader(idx, total int, rule config.Rule, result *syncer.SyncResult) {
-	printRuleBoxHeader(idx, total, rule, headerOptions{
-		ShowSource: true,
-		TagMode:    result.TagMode,
-		ModeSuffix: "(exact match)",
-		TagRegex:   result.TagRegex,
-		TotalTags:  result.TotalTags,
-	})
+func printSyncHeader(idx, total int, rule config.Rule) {
+	title := fmt.Sprintf("RULE %d/%d", idx, total)
+	kvs := make(map[string]string)
+
+	if rule.Name != "" {
+		kvs["Name"] = rule.Name
+	}
+	kvs["Source"] = rule.Source
+	kvs["Destination"] = rule.Dest
+
+	if len(rule.Tags) > 0 {
+		kvs["Mode"] = "tags (exact match)"
+	} else if rule.TagRegex != "" {
+		patternDisplay := rule.TagRegex
+		if len(patternDisplay) > 40 {
+			patternDisplay = patternDisplay[:37] + "..."
+		}
+		kvs["Mode"] = "tag_regex (exact match)"
+		kvs["Pattern"] = patternDisplay
+	}
+
+	logger.PrintInfoCard(title, kvs)
+}
+
+func printSyncTaskStats(result *syncer.SyncResult) {
+	syncedCount := len(result.ToSync) + len(result.Updated)
+	existedCount := len(result.Exist)
+
+	kvs := map[string]string{
+		"Total tags":   fmt.Sprintf("%d", result.TotalTags),
+		"Synced tags":  fmt.Sprintf("%d", syncedCount),
+		"Existed tags": fmt.Sprintf("%d", existedCount),
+	}
+	logger.PrintInfoCard("TASK STATS", kvs)
+}
+
+func printSyncResult(result *syncer.SyncResult) {
+	kvs := map[string]string{
+		"New":     fmt.Sprintf("%d", len(result.ToSync)),
+		"Updated": fmt.Sprintf("%d", len(result.Updated)),
+		"Failed":  fmt.Sprintf("%d", result.Stats.Failed),
+	}
+	logger.PrintInfoCard("RESULT", kvs)
 }
 
 func printSyncBody(result *syncer.SyncResult) {
-	printTagGroup(cGreen+"✓ Synced"+cReset, result.ToSync, cGreen)
-	printTagGroup(cMagenta+"↻ Updated"+cReset, result.Updated, cMagenta)
-	printTagGroup(cYellow+"● Already exist"+cReset, result.Exist, cYellow)
-	printTagGroup(cRed+"⊘ Schema1 skipped"+cReset, result.Schema1, cRed)
+	logger.PrintTagGroup(logger.ColorGreen+"[+] Synced"+logger.ColorReset, result.ToSync)
+	logger.PrintTagGroup(logger.ColorMagenta+"[~] Updated"+logger.ColorReset, result.Updated)
+	logger.PrintTagGroup(logger.ColorYellow+"[=] Already exist"+logger.ColorReset, result.Exist)
 }

@@ -16,13 +16,6 @@ import (
 	"github.com/wolfbolin/sync-docker/internal/logger"
 )
 
-var errSchema1 = fmt.Errorf("schema1 image skipped")
-
-func isSchema1Error(err error) bool {
-	return strings.Contains(err.Error(), "schema1") ||
-		strings.Contains(err.Error(), "would change the manifest")
-}
-
 func newPolicyContext() (*signature.PolicyContext, error) {
 	policy := &signature.Policy{
 		Default: []signature.PolicyRequirement{
@@ -48,14 +41,15 @@ func (s *Syncer) copyImage(srcRef, dstRef string, rule config.Rule) error {
 			return nil
 		}
 
-		if isSchema1Error(lastErr) {
-			return errSchema1
-		}
-
 		logger.Error("  Attempt %d failed: %v", attempt, lastErr)
 	}
 
 	return fmt.Errorf("all %d attempts failed, last error: %w", retryCount, lastErr)
+}
+
+func isSchema1MediaType(mediaType string) bool {
+	return mediaType == "application/vnd.docker.distribution.manifest.v1+json" ||
+		mediaType == "application/vnd.docker.distribution.manifest.v1+prettyjws"
 }
 
 func (s *Syncer) doCopy(srcRef, dstRef string, rule config.Rule) error {
@@ -84,11 +78,24 @@ func (s *Syncer) doCopy(srcRef, dstRef string, rule config.Rule) error {
 		sourceCtx.DockerProxyURL = proxyURL
 	}
 
+	preserveDigests := true
+	if idx := strings.LastIndex(srcRef, ":"); idx > 0 {
+		repository := srcRef[:idx]
+		tag := srcRef[idx+1:]
+		mediaType, err := s.sourceClient.GetManifestMediaType(repository, tag)
+		if err != nil {
+			logger.Warn("  Cannot check manifest type for %s: %v", srcRef, err)
+		} else if isSchema1MediaType(mediaType) {
+			logger.Warn("  Schema1 detected for %s, disabling PreserveDigests", srcRef)
+			preserveDigests = false
+		}
+	}
+
 	options := &copy.Options{
 		SourceCtx:          sourceCtx,
 		DestinationCtx:     destCtx,
 		ImageListSelection: copy.CopyAllImages,
-		PreserveDigests:    true,
+		PreserveDigests:    preserveDigests,
 	}
 
 	_, err = copy.Image(ctx, s.policyCtx, dstRefParsed, srcRefParsed, options)

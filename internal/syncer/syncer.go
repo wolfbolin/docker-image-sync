@@ -5,7 +5,6 @@ import (
 	"regexp"
 
 	"github.com/containers/image/v5/signature"
-
 	"github.com/wolfbolin/sync-docker/internal/config"
 	"github.com/wolfbolin/sync-docker/internal/logger"
 	"github.com/wolfbolin/sync-docker/internal/registry"
@@ -59,7 +58,7 @@ func (s *Syncer) applyProxy(rule config.Rule) {
 	}
 }
 
-func (s *Syncer) SyncRuleDetailed(rule config.Rule) (*SyncResult, error) {
+func (s *Syncer) PrepareSync(rule config.Rule) (*SyncResult, error) {
 	result := &SyncResult{Source: rule.Source, Dest: rule.Dest}
 
 	destPr := config.ParseRef(rule.Dest)
@@ -74,11 +73,7 @@ func (s *Syncer) SyncRuleDetailed(rule config.Rule) (*SyncResult, error) {
 		return nil, err
 	}
 
-	filteredActions, schema1Tags := s.checkSchema1AndFilter(rule, tagsToSync)
-
-	result.Schema1 = schema1Tags
 	result.Exist = existTags
-	result.Stats.Schema1 = len(schema1Tags)
 
 	if len(rule.Tags) > 0 {
 		result.TagMode = "tags"
@@ -88,7 +83,7 @@ func (s *Syncer) SyncRuleDetailed(rule config.Rule) (*SyncResult, error) {
 		result.TotalTags = len(srcTags)
 	}
 
-	for _, tag := range filteredActions {
+	for _, tag := range tagsToSync {
 		if tag.Reason == "new" {
 			result.ToSync = append(result.ToSync, tag.Name)
 		} else if tag.Reason == "update" {
@@ -96,11 +91,27 @@ func (s *Syncer) SyncRuleDetailed(rule config.Rule) (*SyncResult, error) {
 		}
 	}
 
-	for _, tag := range filteredActions {
-		srcRef := config.BuildRef(config.ParseRef(rule.Source), tag.Name)
-		dstRef := config.BuildRef(destPr, tag.Name)
-		logger.Info("  Sync: %s => %s", srcRef, dstRef)
-		if err := s.copyImage(srcRef, dstRef, rule); err != nil {
+	result.tagsToSync = tagsToSync
+	result.destPr = destPr
+	result.rule = rule
+
+	return result, nil
+}
+
+func (s *Syncer) ExecuteSync(result *SyncResult) {
+	srcPr := config.ParseRef(result.rule.Source)
+	for _, tag := range result.Exist {
+		srcRef := config.BuildRef(srcPr, tag)
+		dstRef := config.BuildRef(result.destPr, tag)
+		logger.Warn("  Skip: %s => %s (up-to-date)", srcRef, dstRef)
+	}
+
+	for _, tag := range result.tagsToSync {
+		if tag.Reason == "update" {
+			logger.Warn("  Update: %s => %s (digest changed)", tag.SrcRef, tag.DstRef)
+		}
+		logger.Info("  Sync: %s => %s", tag.SrcRef, tag.DstRef)
+		if err := s.copyImage(tag.SrcRef, tag.DstRef, result.rule); err != nil {
 			logger.Error("  ✗ Failed: %v", err)
 			result.Stats.Failed++
 		} else {
@@ -108,8 +119,6 @@ func (s *Syncer) SyncRuleDetailed(rule config.Rule) (*SyncResult, error) {
 			result.Stats.Success++
 		}
 	}
-
-	return result, nil
 }
 
 func (s *Syncer) CheckRule(rule config.Rule) (*CheckResult, error) {
@@ -177,14 +186,6 @@ func (s *Syncer) AnalyzeDeleteRule(rule config.Rule) (*DeleteResult, error) {
 			tagSet[t] = true
 		}
 		for _, artifact := range artifacts {
-			if isSchema1MediaType(artifact.MediaType) {
-				for _, t := range artifact.Tags {
-					result.Schema1 = append(result.Schema1, DeleteItem{
-						TagName: t.Name, Digest: artifact.Digest, Reason: "schema1",
-					})
-				}
-				continue
-			}
 			for _, t := range artifact.Tags {
 				if tagSet[t.Name] {
 					result.Kept = append(result.Kept, t.Name)
@@ -203,14 +204,6 @@ func (s *Syncer) AnalyzeDeleteRule(rule config.Rule) (*DeleteResult, error) {
 		result.TagRegex = rule.TagRegex
 		re := compilePattern(rule.TagRegex)
 		for _, artifact := range artifacts {
-			if isSchema1MediaType(artifact.MediaType) {
-				for _, t := range artifact.Tags {
-					result.Schema1 = append(result.Schema1, DeleteItem{
-						TagName: t.Name, Digest: artifact.Digest, Reason: "schema1",
-					})
-				}
-				continue
-			}
 			for _, t := range artifact.Tags {
 				if re != nil && re.MatchString(t.Name) {
 					result.Kept = append(result.Kept, t.Name)
@@ -225,16 +218,8 @@ func (s *Syncer) AnalyzeDeleteRule(rule config.Rule) (*DeleteResult, error) {
 	}
 
 	for _, artifact := range artifacts {
-		if isSchema1MediaType(artifact.MediaType) {
-			for _, t := range artifact.Tags {
-				result.Schema1 = append(result.Schema1, DeleteItem{
-					TagName: t.Name, Digest: artifact.Digest, Reason: "schema1",
-				})
-			}
-		} else {
-			for _, t := range artifact.Tags {
-				result.Kept = append(result.Kept, t.Name)
-			}
+		for _, t := range artifact.Tags {
+			result.Kept = append(result.Kept, t.Name)
 		}
 	}
 
@@ -251,7 +236,7 @@ func (s *Syncer) DeleteRule(rule config.Rule, dryRun bool) DeleteStats {
 	destPr := config.ParseRef(rule.Dest)
 	var stats DeleteStats
 
-	toDelete := append(result.Schema1, result.Unmatched...)
+	toDelete := result.Unmatched
 
 	if dryRun {
 		stats.Skipped = len(toDelete)
@@ -277,11 +262,6 @@ func (s *Syncer) DeleteRule(rule config.Rule, dryRun bool) DeleteStats {
 	return stats
 }
 
-func isSchema1MediaType(mediaType string) bool {
-	return mediaType == "application/vnd.docker.distribution.manifest.v1+json" ||
-		mediaType == "application/vnd.docker.distribution.manifest.v1+prettyjws"
-}
-
 func (s *Syncer) fetchSourceTags(rule config.Rule) []registry.SourceTag {
 	s.applyProxy(rule)
 
@@ -299,6 +279,8 @@ type tagAction struct {
 	Name   string
 	Sync   bool
 	Reason string
+	SrcRef string
+	DstRef string
 }
 
 func (s *Syncer) resolveTags(rule config.Rule, srcTags []registry.SourceTag, destTags []registry.HarborTagInfo) ([]tagAction, []string, error) {
@@ -308,19 +290,21 @@ func (s *Syncer) resolveTags(rule config.Rule, srcTags []registry.SourceTag, des
 	}
 
 	srcDigestMap := buildSrcDigestMap(srcTags)
+	srcPr := config.ParseRef(rule.Source)
+	destPr := config.ParseRef(rule.Dest)
 
 	if len(rule.Tags) > 0 {
 		var actions []tagAction
 		var existTags []string
 		for _, tag := range rule.Tags {
+			srcRef := config.BuildRef(srcPr, tag)
+			dstRef := config.BuildRef(destPr, tag)
 			destDigest, exists := destDigestMap[tag]
 			if !exists {
-				actions = append(actions, tagAction{Name: tag, Sync: true, Reason: "new"})
+				actions = append(actions, tagAction{Name: tag, Sync: true, Reason: "new", SrcRef: srcRef, DstRef: dstRef})
 			} else if srcDigest, ok := srcDigestMap[tag]; ok && srcDigest != "" && srcDigest != destDigest {
-				logger.Warn("  Update: %s (digest changed)", tag)
-				actions = append(actions, tagAction{Name: tag, Sync: true, Reason: "update"})
+				actions = append(actions, tagAction{Name: tag, Sync: true, Reason: "update", SrcRef: srcRef, DstRef: dstRef})
 			} else {
-				logger.Warn("  Skip: %s (up-to-date)", tag)
 				existTags = append(existTags, tag)
 			}
 		}
@@ -335,14 +319,14 @@ func (s *Syncer) resolveTags(rule config.Rule, srcTags []registry.SourceTag, des
 			if re != nil && !re.MatchString(tag.Name) {
 				continue
 			}
+			srcRef := config.BuildRef(srcPr, tag.Name)
+			dstRef := config.BuildRef(destPr, tag.Name)
 			destDigest, exists := destDigestMap[tag.Name]
 			if !exists {
-				actions = append(actions, tagAction{Name: tag.Name, Sync: true, Reason: "new"})
+				actions = append(actions, tagAction{Name: tag.Name, Sync: true, Reason: "new", SrcRef: srcRef, DstRef: dstRef})
 			} else if tag.Digest != "" && tag.Digest != destDigest {
-				logger.Warn("  Update: %s (digest changed)", tag.Name)
-				actions = append(actions, tagAction{Name: tag.Name, Sync: true, Reason: "update"})
+				actions = append(actions, tagAction{Name: tag.Name, Sync: true, Reason: "update", SrcRef: srcRef, DstRef: dstRef})
 			} else {
-				logger.Warn("  Skip: %s (up-to-date)", tag.Name)
 				existTags = append(existTags, tag.Name)
 			}
 		}
@@ -350,32 +334,6 @@ func (s *Syncer) resolveTags(rule config.Rule, srcTags []registry.SourceTag, des
 	}
 
 	return nil, nil, fmt.Errorf("rule has neither tags nor tag_regex specified")
-}
-
-func (s *Syncer) checkSchema1AndFilter(rule config.Rule, actions []tagAction) ([]tagAction, []string) {
-	s.applyProxy(rule)
-
-	var filtered []tagAction
-	var schema1Tags []string
-
-	for _, action := range actions {
-		mediaType, err := s.sourceClient.GetManifestMediaType(rule.Source, action.Name)
-		if err != nil {
-			logger.Warn("  Cannot check manifest type for %s: %v", action.Name, err)
-			filtered = append(filtered, action)
-			continue
-		}
-
-		if isSchema1MediaType(mediaType) {
-			logger.Warn("  Skip: %s (schema1 at source)", action.Name)
-			schema1Tags = append(schema1Tags, action.Name)
-			continue
-		}
-
-		filtered = append(filtered, action)
-	}
-
-	return filtered, schema1Tags
 }
 
 func buildSrcDigestMap(tags []registry.SourceTag) map[string]string {

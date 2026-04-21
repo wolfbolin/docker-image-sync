@@ -46,35 +46,37 @@ func runList(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		tagMode := ""
-		if len(rule.Tags) > 0 {
-			tagMode = "tags"
-		} else if rule.TagRegex != "" {
-			tagMode = "tag_regex"
-		}
-
-		printListHeader(i+1, total, rule, tagMode, len(tags))
+		printListHeader(i+1, total, rule, tags)
 		printListBody(tags)
 		fmt.Println()
 	}
 }
 
-func printListHeader(idx, total int, rule config.Rule, tagMode string, tagCount int) {
-	opts := headerOptions{
-		ShowSource: true,
-		TagMode:    tagMode,
-		TotalTags:  tagCount,
+func printListHeader(idx, total int, rule config.Rule, tags []string) {
+	title := fmt.Sprintf("RULE %d/%d", idx, total)
+	kvs := make(map[string]string)
+
+	if rule.Name != "" {
+		kvs["Name"] = rule.Name
 	}
-	if tagMode == "tag_regex" {
-		opts.TagRegex = rule.TagRegex
+	kvs["Source"] = rule.Source
+	kvs["Destination"] = rule.Dest
+
+	if len(rule.Tags) > 0 {
+		kvs["Mode"] = "tags"
+	} else if rule.TagRegex != "" {
+		kvs["Mode"] = "tag_regex"
+		kvs["Pattern"] = rule.TagRegex
 	}
-	printRuleBoxHeader(idx, total, rule, opts)
+	kvs["Total tags"] = fmt.Sprintf("%d", len(tags))
+
+	logger.PrintInfoCard(title, kvs)
 }
 
 func printListBody(tags []string) {
 	if len(tags) == 0 {
-		fmt.Printf("  %s(no tags)%s\n", cDim, cReset)
+		fmt.Printf("  %s(no tags)%s\n", logger.ColorDim, logger.ColorReset)
 		return
 	}
-	printTagGroup(cCyan+"● Tags"+cReset, tags, cCyan)
+	logger.PrintTagGroup(logger.ColorCyan+"● Tags"+logger.ColorReset, tags)
 }

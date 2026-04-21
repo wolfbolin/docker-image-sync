@@ -1,17 +1,17 @@
 package syncer
 
+import "github.com/wolfbolin/sync-docker/internal/config"
+
 type SyncStats struct {
 	Success int
 	Failed  int
 	Exist   int
-	Schema1 int
 }
 
 func (s *SyncStats) Add(other SyncStats) {
 	s.Success += other.Success
 	s.Failed += other.Failed
 	s.Exist += other.Exist
-	s.Schema1 += other.Schema1
 }
 
 type DeleteStats struct {
@@ -38,7 +38,6 @@ type DeleteResult struct {
 	TagRegex  string
 	Tags      []string
 	TotalTags int
-	Schema1   []DeleteItem
 	Unmatched []DeleteItem
 	Kept      []string
 }
@@ -64,6 +63,9 @@ type SyncResult struct {
 	ToSync    []string
 	Updated   []string
 	Exist     []string
-	Schema1   []string
 	Stats     SyncStats
+
+	tagsToSync []tagAction
+	destPr     config.ParsedRef
+	rule       config.Rule
 }

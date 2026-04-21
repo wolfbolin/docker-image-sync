@@ -4,7 +4,7 @@
 
 SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.io、quay.io 等）的镜像自动同步到私有 Harbor 仓库的命令行工具。
 
-核心使用场景：在内网或受限网络环境中，通过代理从公共仓库拉取镜像，推送到内部 Harbor 仓库供内网使用。支持增量同步（仅同步目标不存在的标签）、失败重试、多架构镜像复制、镜像清理（删除不匹配和 schema1 镜像）。
+核心使用场景：在内网或受限网络环境中，通过代理从公共仓库拉取镜像，推送到内部 Harbor 仓库供内网使用。支持增量同步（仅同步目标不存在的标签）、失败重试、多架构镜像复制、镜像清理（删除不匹配的镜像）。
 
 ## 技术栈
 
@@ -22,10 +22,11 @@ SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.i
 ├── main.go                              # 入口，调用 cmd.Execute()
 ├── cmd/
 │   ├── root.go                          # 根命令，定义 -c/--config 全局参数
-│   ├── sync.go                          # sync 子命令 - 执行镜像同步
+│   ├── sync.go                          # sync 子命令 - 执行镜像同步（三阶段输出）
 │   ├── check.go                         # check 子命令 - 预览匹配结果（dry run）
 │   ├── list.go                          # list 子命令 - 列出目标仓库已有标签
-│   └── delete.go                        # delete 子命令 - 删除不匹配和 schema1 镜像
+│   ├── delete.go                        # delete 子命令 - 删除不匹配镜像
+│   └── ui.go                            # 终端 UI 工具（Box/卡片格式输出、标签分组显示）
 ├── internal/
 │   ├── config/
 │   │   ├── config.go                    # 配置结构体定义（Config, Rule, SyncConfig）
@@ -36,9 +37,9 @@ SyncDockerHub 是一个将公共容器镜像仓库（Docker Hub、registry.k8s.i
 │   │   ├── containers_image.go          # 基于 containers/image 的统一源客户端
 │   │   └── harbor.go                    # Harbor API v2 客户端（含认证）
 │   ├── syncer/
-│   │   ├── types.go                     # SyncStats, DeleteStats, CheckResult, DeleteResult 类型
-│   │   ├── syncer.go                    # 核心引擎（同步、检查、删除分析、标签解析）
-│   │   └── copy.go                      # 镜像复制（containers/image 封装、重试、代理、schema1 跳过）
+│   │   ├── types.go                     # SyncStats, DeleteStats, CheckResult, DeleteResult, SyncResult 类型
+│   │   ├── syncer.go                    # 核心引擎（准备/执行同步、检查、删除分析、标签解析）
+│   │   └── copy.go                      # 镜像复制（containers/image 封装、重试、代理、schema1 适配）
 │   └── logger/
 │       └── logger.go                    # 彩色日志工具（INFO/WARN/ERROR/FATAL/DEBUG）
 ├── config.yaml.example                  # 配置文件示例
@@ -61,6 +62,7 @@ cmd (sync/check/list/delete)
     │   └── 自动处理 OCI v2 Auth（Bearer token/Basic/匿名回退）
     │   └── 从 ~/.docker/config.json 读取认证信息
     │   └── 通过 SetProxy() / DockerProxyURL 控制代理（不依赖环境变量）
+    │   └── GetManifestMediaType() ── 获取源镜像 manifest MIME 类型（用于 schema1 检测）
     │
     ├── registry.HarborClient ── Harbor API v2 ── 获取目标标签列表 / 删除镜像
     │   └── 从 ~/.docker/config.json 读取 Harbor 认证信息
@@ -68,20 +70,24 @@ cmd (sync/check/list/delete)
     ▼
 syncer.Syncer
     │
-    ├── resolveTags()          ── 对比源标签与目标标签，确定待同步列表
-    │   ├── tags 模式          ── 精确匹配，跳过已存在
-    │   └── tag_regex 模式     ── 正则过滤 + 已存在跳过
+    ├── PrepareSync()          ── 准备阶段（获取标签、解析待同步列表）
+    │   ├── fetchSourceTags()  ── 获取源标签列表
+    │   ├── resolveTags()      ── 对比源标签与目标标签，确定待同步列表
+    │   │   ├── tags 模式      ── 精确匹配，跳过已存在
+    │   │   └── tag_regex 模式 ── 正则过滤 + 已存在跳过
+    │   └── 返回 SyncResult    ── 包含待同步/已存在标签信息和内部执行上下文
     │
-    ├── copyImage()            ── 失败重试（可配置次数和间隔）
-    │   └── doCopy()           ── 调用 containers/image copy.Image()
-    │       ├── SourceCtx.DockerProxyURL（规则级代理，仅源端）
-    │       ├── DestinationCtx 不设置代理（推送直连）
-    │       ├── ImageListSelection: CopyAllImages（多架构）
-    │       ├── PreserveDigests: true（保留摘要）
-    │       └── schema1 镜像自动跳过（返回 errSchema1）
+    ├── ExecuteSync()          ── 执行阶段（逐个复制镜像）
+    │   ├── 打印 Skip/Update 日志（完整源=>目标引用格式）
+    │   └── copyImage()        ── 失败重试（可配置次数和间隔）
+    │       └── doCopy()       ── 调用 containers/image copy.Image()
+    │           ├── SourceCtx.DockerProxyURL（规则级代理，仅源端）
+    │           ├── DestinationCtx 不设置代理（推送直连）
+    │           ├── ImageListSelection: CopyAllImages（多架构）
+    │           ├── schema1 镜像：PreserveDigests=false（允许 manifest 修改以更新嵌入引用）
+    │           └── 非 schema1 镜像：PreserveDigests=true（保留摘要）
     │
     ├── AnalyzeDeleteRule()    ── 分析目标仓库中应删除的镜像
-    │   ├── schema1 检测       ── 识别并标记 V1 manifest
     │   ├── tags 模式          ── 保留列表中的标签，标记其余为 Unmatched
     │   └── tag_regex 模式     ── 保留匹配正则的标签，标记其余为 Unmatched
     │
@@ -139,7 +145,12 @@ syncer.Syncer
 
 ### sync
 
-执行镜像同步。对每条规则，从 destination 解析 Harbor 地址创建客户端，查询已有标签，仅同步不存在的标签。schema1 格式镜像自动跳过。
+执行镜像同步。对每条规则，从 destination 解析 Harbor 地址创建客户端，查询已有标签，仅同步不存在的标签。schema1 格式镜像通过禁用 `PreserveDigests` 适配复制。
+
+输出采用三阶段卡片式展示：
+1. **基础信息卡片**：同步开始前打印，包含 Name、Source、Destination、Mode、Pattern
+2. **任务统计卡片**：获取标签信息后打印，包含 Total tags、Synced tags、Existed tags
+3. **同步结果卡片**：镜像复制完成后打印，包含 New、Updated、Failed
 
 ```
 image-syncer sync [-c config.yaml] [-r alpine,nginx]
@@ -163,19 +174,41 @@ image-syncer list [-c config.yaml] [-r alpine]
 
 ### delete
 
-删除目标仓库中不匹配规则和 schema1 格式的镜像。支持 dry-run 模式预览。展示 Box 格式的规则信息和删除计划。
+删除目标仓库中不匹配规则的镜像。支持 dry-run 模式预览。展示 Box 格式的规则信息和删除计划。
 
 ```
 image-syncer delete [-c config.yaml] [-r alpine] [--dry-run]
 ```
 
 删除逻辑：
-- **schema1 镜像**：始终删除（`media_type` 为 `v1+json` 或 `v1+prettyjws`）
 - **tags 模式**：保留列表中声明的标签，删除不在列表中的标签
 - **tag_regex 模式**：保留匹配正则的标签，删除不匹配的标签
-- **无 tags/tag_regex**：仅删除 schema1 镜像
+- **无 tags/tag_regex**：不删除任何镜像
 
 ## 关键实现细节
+
+### Schema1 镜像处理策略
+
+schema1 镜像的 manifest 中嵌入了源仓库的 Docker 引用，复制到目标仓库时引用会改变，导致摘要变化。`containers/image` 库在 `PreserveDigests: true` 时会拒绝此操作。
+
+**处理方式**：
+- **sync 命令**：不屏蔽 schema1 镜像，而是在复制前通过 `GetManifestMediaType()` 检测 manifest 类型，如果是 schema1 则设置 `PreserveDigests: false`，允许 manifest 被修改以更新嵌入的 Docker 引用
+- **delete 命令**：不删除 schema1 镜像，schema1 镜像与普通镜像一样参与 tags/tag_regex 匹配
+
+**检测方法**：
+```go
+func isSchema1MediaType(mediaType string) bool {
+    return mediaType == "application/vnd.docker.distribution.manifest.v1+json" ||
+        mediaType == "application/vnd.docker.distribution.manifest.v1+prettyjws"
+}
+```
+
+### 同步流程（PrepareSync + ExecuteSync）
+
+sync 命令将同步流程拆分为准备和执行两个阶段，以支持三阶段卡片式输出：
+
+1. **PrepareSync()**：获取源/目标标签列表，解析待同步标签，返回 `SyncResult`（包含待同步/已存在标签信息和内部执行上下文 `tagsToSync`/`destPr`/`rule`）
+2. **ExecuteSync()**：遍历 `SyncResult.tagsToSync` 逐个复制镜像，打印 Skip/Update/Sync 日志，更新统计信息
 
 ### 源标签获取（ContainersImageClient）
 
@@ -193,6 +226,23 @@ tagNames, _ := docker.GetRepositoryTags(ctx, sysCtx, ref)
 - 内置 `sync.Mutex` + `map` 内存缓存
 - 代理通过 `SetProxy()` 方法设置，内部解析为 `*url.URL` 并写入 `SystemContext.DockerProxyURL`
 
+### Manifest 类型获取（GetManifestMediaType）
+
+```go
+func (c *ContainersImageClient) GetManifestMediaType(repository, tag string) (string, error) {
+    refStr := "docker://" + repository + ":" + tag
+    ref, _ := alltransports.ParseImageName(refStr)
+    sysCtx := c.buildSysCtx()
+    src, _ := ref.NewImageSource(context.Background(), sysCtx)
+    defer src.Close()
+    _, mimeType, _ := src.GetManifest(context.Background(), nil)
+    return mimeType, nil
+}
+```
+
+- 打开镜像源引用，获取 manifest 的 MIME 类型
+- 用于 `doCopy()` 中在复制前检测 schema1 镜像
+
 ### 镜像复制（doCopy）
 
 ```go
@@ -204,11 +254,19 @@ if rule.Proxy && s.proxyURL != "" {
     sourceCtx.DockerProxyURL = proxyURL  // 仅源端走代理
 }
 
+preserveDigests := true
+if idx := strings.LastIndex(srcRef, ":"); idx > 0 {
+    mediaType, _ := s.sourceClient.GetManifestMediaType(srcRef[:idx], srcRef[idx+1:])
+    if isSchema1MediaType(mediaType) {
+        preserveDigests = false  // schema1 镜像允许 manifest 修改
+    }
+}
+
 options := &copy.Options{
     SourceCtx:          sourceCtx,
     DestinationCtx:     destCtx,
     ImageListSelection: copy.CopyAllImages,
-    PreserveDigests:    true,
+    PreserveDigests:    preserveDigests,
 }
 _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
 ```
@@ -216,7 +274,9 @@ _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
 - 签名策略使用 `InsecureAcceptAnything`（接受所有签名）
 - `PolicyContext` 在 `NewSyncer` 时创建，`Close()` 时销毁
 - 代理通过 `SourceCtx.DockerProxyURL` 显式传递，仅源端走代理，目标端直连
-- schema1 镜像复制时 `PreserveDigests` 会冲突，通过 `isSchema1Error()` 检测并跳过
+- schema1 镜像设置 `PreserveDigests: false`，允许 manifest 中嵌入的 Docker 引用被更新
+- 非 schema1 镜像设置 `PreserveDigests: true`，保留摘要不变
+- 所有复制错误统一走重试逻辑，不针对 schema1 特殊处理
 
 ### Harbor API 客户端
 
@@ -234,13 +294,14 @@ _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
    - 正则匹配过滤
    - 跳过目标已存在的标签
 
+`resolveTags()` 不直接打印日志，而是将信息存入 `tagAction` 结构体（含 `SrcRef`/`DstRef` 字段），由 `ExecuteSync()` 统一打印。
+
 ### 删除分析逻辑（AnalyzeDeleteRule）
 
 1. 获取目标仓库所有 artifacts（含 media_type）
-2. schema1 检测：`media_type` 为 `v1+json` 或 `v1+prettyjws` 的标记为删除
-3. tags 模式：不在列表中的标签标记为 Unmatched
-4. tag_regex 模式：不匹配正则的标签标记为 Unmatched
-5. 返回 `DeleteResult`（Schema1 列表、Unmatched 列表、Kept 列表）
+2. tags 模式：不在列表中的标签标记为 Unmatched
+3. tag_regex 模式：不匹配正则的标签标记为 Unmatched
+4. 返回 `DeleteResult`（Unmatched 列表、Kept 列表）
 
 ### 配置校验（Validate）
 
@@ -260,7 +321,7 @@ _, err = copy.Image(ctx, policyCtx, dstRef, srcRef, options)
 
 ```bash
 # 本地构建（必须使用 containers_image_openpgp tag）
-CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o image-syncer .
+CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o bin/image-syncer .
 
 # Docker 构建
 docker build -t image-syncer:latest .

@@ -18,7 +18,7 @@ var (
 
 var deleteCmd = &cobra.Command{
 	Use:   "delete",
-	Short: "Delete unmatched and schema1 images from target registry",
+	Short: "Delete unmatched images from target registry",
 	Run:   runDelete,
 }
 
@@ -95,55 +95,52 @@ func runDelete(cmd *cobra.Command, args []string) {
 }
 
 func printDeleteHeader(idx, total int, rule config.Rule, result *syncer.DeleteResult) {
-	var extra []string
+	title := fmt.Sprintf("RULE %d/%d", idx, total)
+	kvs := make(map[string]string)
+
+	if rule.Name != "" {
+		kvs["Name"] = rule.Name
+	}
+	kvs["Destination"] = rule.Dest
+
 	modeSuffix := "(keep listed only)"
 	if result.TagMode == "tag_regex" {
 		modeSuffix = "(keep matching only)"
 	}
+
 	if result.TagMode == "tags" {
-		extra = append(extra, fmt.Sprintf("│ %sKeep tags:%s   %s", cBold, cReset, formatTagList(result.Tags)))
-	}
-	extra = append(extra, fmt.Sprintf("│ %sTotal tags:%s  %d", cBold, cReset, result.TotalTags))
-	if deleteDryRun {
-		extra = append(extra, fmt.Sprintf("│ %sDry run:%s     %strue%s (no changes)", cBold, cReset, cYellow, cReset))
+		kvs["Mode"] = fmt.Sprintf("tags %s", modeSuffix)
+		kvs["Keep tags"] = logger.FormatTagList(result.Tags)
+	} else if result.TagMode == "tag_regex" {
+		kvs["Mode"] = fmt.Sprintf("tag_regex %s", modeSuffix)
+		kvs["Pattern"] = result.TagRegex
 	}
 
-	printRuleBoxHeader(idx, total, rule, headerOptions{
-		ShowSource: false,
-		TagMode:    result.TagMode,
-		ModeSuffix: modeSuffix,
-		TagRegex:   result.TagRegex,
-		TotalTags:  result.TotalTags,
-		ExtraLines: extra,
-	})
+	kvs["Total tags"] = fmt.Sprintf("%d", result.TotalTags)
+
+	if deleteDryRun {
+		kvs["Dry run"] = fmt.Sprintf("%strue%s (no changes)", logger.ColorYellow, logger.ColorReset)
+	}
+
+	logger.PrintInfoCard(title, kvs)
 }
 
 func printDeleteDryRun(result *syncer.DeleteResult) {
-	schema1Names := make([]string, len(result.Schema1))
-	for i, item := range result.Schema1 {
-		schema1Names[i] = item.TagName
-	}
 	unmatchedNames := make([]string, len(result.Unmatched))
 	for i, item := range result.Unmatched {
 		unmatchedNames[i] = item.TagName
 	}
 
-	printTagGroup(cRed+"✗ Schema1 (will delete)"+cReset, schema1Names, cRed)
-	printTagGroup(cRed+"✗ Unmatched (will delete)"+cReset, unmatchedNames, cRed)
-	printTagGroup(cGreen+"✓ Kept"+cReset, result.Kept, cGreen)
+	logger.PrintTagGroup(logger.ColorRed+"[-] Unmatched (will delete)"+logger.ColorReset, unmatchedNames)
+	logger.PrintTagGroup(logger.ColorGreen+"[=] Kept"+logger.ColorReset, result.Kept)
 }
 
 func printDeleteResult(result *syncer.DeleteResult, stats syncer.DeleteStats) {
-	schema1Names := make([]string, len(result.Schema1))
-	for i, item := range result.Schema1 {
-		schema1Names[i] = item.TagName
-	}
 	unmatchedNames := make([]string, len(result.Unmatched))
 	for i, item := range result.Unmatched {
 		unmatchedNames[i] = item.TagName
 	}
 
-	printTagGroup(fmt.Sprintf("%s✗ Schema1: deleted=%d%s", cRed, stats.Deleted, cReset), schema1Names, cRed)
-	printTagGroup(fmt.Sprintf("%s✗ Unmatched: deleted=%d%s", cRed, stats.Deleted, cReset), unmatchedNames, cRed)
-	printTagGroup(cGreen+"✓ Kept"+cReset, result.Kept, cGreen)
+	logger.PrintTagGroup(logger.ColorRed+fmt.Sprintf("[-] Unmatched: deleted=%d", stats.Deleted)+logger.ColorReset, unmatchedNames)
+	logger.PrintTagGroup(logger.ColorGreen+"[=] Kept"+logger.ColorReset, result.Kept)
 }
