@@ -1,82 +1,67 @@
 package cmd
 
 import (
-	"fmt"
+	"context"
+	"net/url"
 
 	"github.com/spf13/cobra"
-
-	"github.com/wolfbolin/sync-docker/internal/config"
-	"github.com/wolfbolin/sync-docker/internal/logger"
-	"github.com/wolfbolin/sync-docker/internal/registry"
+	"github.com/wolfbolin/bolbox/pkg/log"
+	"github.com/wolfbolin/sync-docker/internal/cfg"
+	"github.com/wolfbolin/sync-docker/internal/hub"
 )
-
-var listRuleNames string
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List synced images and tags for rules",
+	Short: "List target registry image tags",
 	Run:   runList,
 }
 
 func init() {
-	listCmd.Flags().StringVarP(&listRuleNames, "rule", "r", "", "Rule names to list (comma-separated)")
+	listCmd.Flags().StringP("config", "c", "", "指定同步所需配置文件")
+	listCmd.Flags().StringP("rule", "r", "", "指定同步的规则（逗号分割）")
+	listCmd.Flags().Bool("online", false, "同时获取源端和目标端标签")
 	rootCmd.AddCommand(listCmd)
 }
 
 func runList(cmd *cobra.Command, args []string) {
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		logger.Fatal("Failed to load config: %v", err)
-	}
+	configFile, _ := cmd.Flags().GetString("config")
+	ruleNames, _ := cmd.Flags().GetString("rule")
+	online, _ := cmd.Flags().GetBool("online")
 
-	rules, err := cfg.FilterRules(listRuleNames)
-	if err != nil {
-		logger.Fatal("Failed to filter rules: %v", err)
-	}
+	config := cfg.LoadConfig(configFile)
+	config.FilterRules(ruleNames)
+	log.Info("Config loaded successfully")
 
-	total := len(rules)
+	ctx := context.Background()
+	for idx, rule := range config.Rules {
+		PrintRuleInfo(idx+1, len(config.Rules), &rule)
 
-	for i, rule := range rules {
-		destPr := config.ParseRef(rule.Dest)
-		harbor := registry.NewHarborClient(destPr.Registry)
-
-		tags, err := harbor.ListTags(destPr.Project, destPr.Name)
+		targetClient := hub.NewContainersClient()
+		targetImage := hub.ParseImage(rule.Target)
+		targetTags, err := targetClient.ImageTags(ctx, targetImage)
 		if err != nil {
-			logger.Warn("  Failed to fetch tags: %v", err)
+			log.Errorf("List tags error: %+v", err)
 			continue
 		}
 
-		printListHeader(i+1, total, rule, tags)
-		printListBody(tags)
-		fmt.Println()
+		if !online {
+			PrintHubTagStats(targetTags, nil)
+			continue
+		}
+
+		sourceClient := hub.NewContainersClient()
+		sourceImage := hub.ParseImage(rule.Source)
+		if rule.Proxy {
+			proxyUrl, _ := url.Parse(config.Proxy)
+			sourceClient.SetProxy(proxyUrl)
+		}
+
+		sourceTags, err := sourceClient.ImageTags(ctx, sourceImage)
+		if err != nil {
+			log.Errorf("List source tags error: %+v", err)
+			continue
+		}
+
+		PrintHubTagStats(sourceTags, targetTags)
 	}
-}
-
-func printListHeader(idx, total int, rule config.Rule, tags []string) {
-	title := fmt.Sprintf("RULE %d/%d", idx, total)
-	kvs := make(map[string]string)
-
-	if rule.Name != "" {
-		kvs["Name"] = rule.Name
-	}
-	kvs["Source"] = rule.Source
-	kvs["Destination"] = rule.Dest
-
-	if len(rule.Tags) > 0 {
-		kvs["Mode"] = "tags"
-	} else if rule.TagRegex != "" {
-		kvs["Mode"] = "tag_regex"
-		kvs["Pattern"] = rule.TagRegex
-	}
-	kvs["Total tags"] = fmt.Sprintf("%d", len(tags))
-
-	logger.PrintInfoCard(title, kvs)
-}
-
-func printListBody(tags []string) {
-	if len(tags) == 0 {
-		fmt.Printf("  %s(no tags)%s\n", logger.ColorDim, logger.ColorReset)
-		return
-	}
-	logger.PrintTagGroup(logger.ColorCyan+"● Tags"+logger.ColorReset, tags)
 }

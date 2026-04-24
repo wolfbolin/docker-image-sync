@@ -1,351 +1,202 @@
-# SyncDockerHub
+# docker-image-sync
 
-将公共容器镜像仓库的镜像自动同步到私有 Harbor 仓库的命令行工具。
+docker-image-sync 是一个将公共容器镜像仓库中的镜像同步到私有 Harbor/OCI 仓库的命令行工具。当前实现基于 `containers/image` 直接完成标签查询、镜像复制和标签删除，不依赖本机安装 `skopeo`。
 
-## 支持的源仓库
+典型场景是在内网或受限网络环境中，按规则从 Docker Hub、registry.k8s.io、Quay、GHCR、阿里云 ACR 等公共仓库拉取镜像，并推送到内部 Harbor 供集群或业务系统使用。
 
-| 源仓库 | registry 标识 | 认证方式 |
-|--------|---------------|----------|
-| Docker Hub | `docker.io` | OCI v2 Auth（自动匿名/Bearer/Basic） |
-| registry.k8s.io | `registry.k8s.io` | OCI v2 Auth |
-| Quay.io | `quay.io` | OCI v2 Auth |
-| GitHub Container Registry | `ghcr.io` | OCI v2 Auth |
-| 阿里云 ACR | `registry.aliyuncs.com` | OCI v2 Auth |
-| 其他 OCI 兼容仓库 | 任意域名 | OCI v2 Auth |
+## 当前能力
 
-> 所有源仓库统一使用 `containers/image` 库获取标签列表，自动处理认证流程（Bearer token 获取/刷新、Basic auth、匿名回退），认证信息从 `~/.docker/config.json` 读取。
+- 通过 `sync` 同步镜像标签，默认只复制目标端不存在的标签。
+- 通过 `sync --dry-run` 预览同步计划；`check` 命令已移除。
+- 通过 `sync -f/--force` 对已存在标签比较 digest，发现差异后重新同步。
+- 通过 `list` 查看目标端标签；`list --online` 同时查看 source 和 target 两侧标签。
+- 通过 `delete` 删除目标端冗余标签；支持 `--dry-run` 预览。
+- 每条规则可独立决定 source 侧是否使用代理。
+- 镜像复制使用 `copy.CopyAllImages`，支持多架构 manifest list。
+- 认证由 `containers/image` 按标准容器认证配置读取，通常来自 `~/.docker/config.json`。
 
-## 功能特性
-
-### 统一源仓库支持
-
-- 基于 [containers/image](https://github.com/containers/image) 库统一获取所有源仓库的标签列表
-- 自动处理 OCI v2 Auth 认证流程，无需为不同仓库适配认证逻辑
-- 认证信息从 `~/.docker/config.json` 自动读取，无需额外配置
-
-### 独立规则配置
-
-- 每条规则独立配置源镜像和目标仓库，支持同步到不同的 Harbor 实例和项目
-- 通过 YAML 配置文件定义同步规则，无需数据库
-
-### 灵活的标签匹配
-
-- **精确标签列表**（`tags`）：指定多个标签进行同步
-- **正则匹配**（`tag_regex`）：使用正则表达式批量匹配标签
-
-### 按规则代理控制
-
-- 每条规则可独立声明是否使用代理（`proxy: true/false`）
-- 全局代理支持配置文件和环境变量（`HTTPS_PROXY`/`HTTP_PROXY`）兜底
-- 代理通过 `containers/image` 库的 `SystemContext.DockerProxyURL` 显式传递，仅作用于源端拉取，目标端推送直连
-- 不依赖环境变量切换代理（Go 标准库 `http.ProxyFromEnvironment` 使用 `sync.Once` 缓存，运行时修改环境变量不生效）
-
-### 智能同步策略
-
-- 自动跳过目标仓库中已存在的标签，避免重复同步
-- digest 变化时自动触发更新同步
-- schema1 格式镜像自动跳过（不兼容 `PreserveDigests`）
-- 单个标签同步失败不影响整体流程，继续处理后续标签
-- 同步失败自动重试，可配置重试次数和间隔
-
-### 镜像清理
-
-- `delete` 命令删除目标仓库中不匹配规则的镜像和 schema1 格式镜像
-- 支持 `tags` 模式（保留列表中的标签）和 `tag_regex` 模式（保留匹配正则的标签）
-- `--dry-run` 参数预览删除计划，不实际执行删除
-- Box 格式展示规则信息和删除计划
-
-### 规则筛选
-
-- 所有命令均支持 `--rule` / `-r` 参数指定规则名称
-- 支持逗号分隔指定多条规则，不指定则执行全部
-
-### 预览检查
-
-- `check` 命令可预览规则匹配结果，展示匹配标签、已存在标签和待同步标签，不执行实际同步操作
-
-### 内置镜像复制
-
-- 基于 [containers/image](https://github.com/containers/image) 库实现镜像复制，无需安装 skopeo 运行时依赖
-- 支持多架构镜像同步（`--all`）和摘要保留（`--preserve-digests`）
-
-## 依赖
+## 技术栈
 
 - Go 1.25+
+- CLI: `github.com/spf13/cobra`
+- 镜像操作: `github.com/containers/image/v5`
+- 配置解析: `gopkg.in/yaml.v3`
 
-## 构建
+构建时必须使用 `containers_image_openpgp` tag，并建议关闭 CGO：
 
 ```bash
-# 本地构建（输出到 bin 目录）
-mkdir -p bin && CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o bin/image-syncer .
-
-# 交叉编译 Linux amd64（输出到 bin 目录）
-mkdir -p bin && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "containers_image_openpgp" -o bin/image-syncer .
-
-# 直接运行
-CGO_ENABLED=0 go run -tags "containers_image_openpgp" .
-
-# Docker 多阶段构建
-docker build -t image-syncer:latest .
+CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o bin/image-syncer .
 ```
 
 ## 配置
 
-复制示例配置并按需修改：
-
-```bash
-cp config.yaml.example config.yaml
-```
-
-配置文件结构：
+当前配置模型由 `internal/cfg` 定义。核心字段是顶层 `proxy`、`retry` 和 `rules`，规则目标字段名是 `target`。
 
 ```yaml
-# 全局代理（可选，支持环境变量 HTTPS_PROXY/HTTP_PROXY 兜底）
-proxy: "http://1.2.3.4:5678"
+proxy: "http://10.10.30.34:12821"
 
-# 代理排除列表（保留字段，当前代理仅作用于源端，目标端直连无需排除）
-no_proxy: "harbor.example.com,127.0.0.1,localhost"
-
-# 同步行为
-sync:
-  retry: 3
+retry:
+  times: 3
   interval: 5s
 
-# 同步规则 - 每条规则独立配置源和目标
 rules:
-  # Docker Hub - 精确标签列表同步
+  - name: "ubuntu"
+    source: "docker.io/library/ubuntu"
+    target: "hub.example.com:8443/docker.io/ubuntu"
+    proxy: true
+    tags: ["22.04", "24.04"]
+
   - name: "alpine"
     source: "docker.io/library/alpine"
-    destination: "harbor.example.com/docker.io/alpine"
+    target: "hub.example.com:8443/docker.io/alpine"
     proxy: true
-    tags: ["3.19", "3.20"]
-
-  # Docker Hub - 正则匹配同步
-  - name: "nginx"
-    source: "docker.io/library/nginx"
-    destination: "harbor.example.com/docker.io/nginx"
-    proxy: false
-    tag_regex: "^1\\.2[0-9]\\..*$"
+    tag_regex: '^\d+\.\d+(\.\d+)?$'
 ```
 
-### 字段说明
+字段说明：
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `name` | 否 | 规则名称，用于 `--rule` 参数筛选，必须唯一 |
-| `source` | 是 | 源镜像路径，格式见下方说明 |
-| `destination` | 是 | 目标镜像路径，格式为 `registry/project/name` |
-| `proxy` | 是 | 是否使用全局代理拉取镜像 |
-| `tags` | 否* | 精确标签列表，与 `tag_regex` 二选一 |
-| `tag_regex` | 否* | 正则表达式匹配标签，与 `tags` 二选一 |
+| 字段 | 位置 | 说明 |
+| --- | --- | --- |
+| `proxy` | 顶层 | source 侧代理地址。仅当规则 `proxy: true` 时设置到 source client。 |
+| `retry.times` | 顶层 | copy/delete 失败后的最大尝试次数；小于等于 0 时重置为 3。 |
+| `retry.interval` | 顶层 | 重试间隔配置；小于等于 0 时重置为 5s。 |
+| `rules[].name` | 规则 | 规则名称，用于 `-r/--rule` 过滤；非空时必须唯一。 |
+| `rules[].source` | 规则 | 源镜像仓库，例如 `docker.io/library/alpine`。 |
+| `rules[].target` | 规则 | 目标镜像仓库，例如 `hub.example.com:8443/docker.io/alpine`。 |
+| `rules[].proxy` | 规则 | 是否对 source 侧查询和拉取启用顶层代理。 |
+| `rules[].tags` | 规则 | 精确匹配的标签列表。 |
+| `rules[].tag_regex` | 规则 | 标签正则表达式；配置时会进行正则合法性校验。 |
 
-> *`tags` 和 `tag_regex` 不可同时使用，至少配置一种。
+镜像引用使用 `/` 分段解析。第一段如果是域名或 `host:port`，会识别为 registry；否则会作为 project/name 解析。
 
-### source 格式说明
+配置文件查找顺序：
 
-`source` 字段使用 `/` 分隔，程序自动识别 registry 域名（包含 `.` 或 `:` 的第一段）：
+1. 命令行 `-c/--config` 指定的路径。
+2. 环境变量 `SYNC_DOCKER_CONFIG`。
+3. `$HOME/.config/docker-image-sync/config.yaml`。
+4. 当前工作目录下的 `config.yaml`。
 
-| 格式 | 示例 | 解析结果 |
-|------|------|----------|
-| 仅镜像名 | `nginx` | Name=nginx |
-| project/name | `library/nginx` | Project=library, Name=nginx |
-| registry/project/name | `docker.io/library/nginx` | Registry=docker.io, Project=library, Name=nginx |
-| registry/name | `registry.k8s.io/pause` | Registry=registry.k8s.io, Name=pause |
-| registry/project/name | `registry.k8s.io/coredns/coredns` | Registry=registry.k8s.io, Project=coredns, Name=coredns |
-| registry:port/project/name | `harbor.example.com:23333/docker.io/ubuntu` | Registry=harbor.example.com:23333, Project=docker.io, Name=ubuntu |
+自动化验证请使用 `./config-test.yaml`，不要使用本地 `./config.yaml`。
 
-> **推荐**：始终使用完整路径（含 registry 前缀），避免歧义。
+## 命令
 
-## 使用
+所有业务命令都支持 `-c/--config` 和 `-r/--rule`。`--rule` 接收逗号分隔的规则名称，不传则处理全部规则。
+
+### sync
+
+执行同步。流程为：读取 source/target 标签，按规则筛选 source 标签，计算 `Sync/Over/Diff/Same`，再复制 `Sync` 和 `Diff` 标签。
 
 ```bash
-# 执行同步（所有规则）
-image-syncer sync -c config.yaml
-
-# 执行同步（指定规则）
-image-syncer sync -c config.yaml -r alpine,nginx
-
-# 预览规则匹配结果（不实际同步）
-image-syncer check -c config.yaml
-
-# 预览指定规则
-image-syncer check -c config.yaml -r alpine
-
-# 查看已同步的镜像和标签
-image-syncer list -c config.yaml
-
-# 查看指定规则的已同步镜像
-image-syncer list -c config.yaml -r alpine
-
-# 预览删除计划（dry run，不实际删除）
-image-syncer delete -c config.yaml --dry-run
-
-# 预览指定规则的删除计划
-image-syncer delete -c config.yaml -r busybox --dry-run
-
-# 执行删除
-image-syncer delete -c config.yaml -r busybox
+image-syncer sync -c config-test.yaml
+image-syncer sync -c config-test.yaml -r ubuntu,alpine
+image-syncer sync -c config-test.yaml -r alpine --dry-run
+image-syncer sync -c config-test.yaml -r alpine --dry-run -f
 ```
 
-### sync 命令输出示例
+参数：
 
-```
-[INFO] Config loaded successfully
-[INFO] Start sync, 2 rules in total
+| 参数 | 说明 |
+| --- | --- |
+| `--dry-run` | 只执行标签查询和计划输出，不复制镜像。 |
+| `-f, --force` | 对 `Same` 标签比较 source/target digest；digest 不同时放入 `Diff` 并在非 dry-run 模式下重新复制。 |
 
-+-------- [RULE 1/2] -----------------------------------------------+
-|  Name        = alpine                                             |
-|  Source      = docker.io/library/alpine                           |
-|  Destination = harbor.example.com/docker.io/alpine                |
-|  Mode        = tags (exact match)                                 |
-+-------------------------------------------------------------------+
-+-------- [TASK STATS] ---------------------------------------------+
-|  Total tags   = 2                                                 |
-|  Synced tags  = 2                                                 |
-|  Existed tags = 0                                                 |
-+-------------------------------------------------------------------+
-[INFO] Syncing docker.io/library/alpine:3.19 => harbor.example.com/docker.io/alpine:3.19
-[INFO] Syncing docker.io/library/alpine:3.20 => harbor.example.com/docker.io/alpine:3.20
-+-------- [RESULT] -------------------------------------------------+
-|  New     = 2                                                      |
-|  Updated = 0                                                      |
-|  Failed  = 0                                                      |
-+-------------------------------------------------------------------+
-  [+] Synced (2): 3.19  3.20
-  [~] Updated (0): -
-  [=] Already exist (0): -
+输出分组含义：
 
+| 分组 | 含义 |
+| --- | --- |
+| `Sync` | source 匹配规则且 target 不存在，待新增。 |
+| `Over` | target 存在但不在本次 source 匹配结果中。 |
+| `Diff` | source/target 同名标签 digest 不同，需更新。 |
+| `Same` | source/target 同名标签一致或未开启 digest 比较时已存在。 |
 
-+-------- [RULE 2/2] -----------------------------------------------+
-|  Name        = coredns                                            |
-|  Source      = registry.k8s.io/coredns/coredns                    |
-|  Destination = harbor.example.com/registry.k8s.io/coredns/coredns |
-|  Mode        = tag_regex (exact match)                            |
-|  Pattern     = ^v1\.(28|29|30)\.[0-9]+$                           |
-+-------------------------------------------------------------------+
-+-------- [TASK STATS] ---------------------------------------------+
-|  Total tags   = 4                                                 |
-|  Synced tags  = 3                                                 |
-|  Existed tags = 1                                                 |
-+-------------------------------------------------------------------+
-[INFO] Syncing registry.k8s.io/coredns/coredns:v1.28.5 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.28.5
-[INFO] Syncing registry.k8s.io/coredns/coredns:v1.29.3 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.29.3
-[INFO] Syncing registry.k8s.io/coredns/coredns:v1.30.0 => harbor.example.com/registry.k8s.io/coredns/coredns:v1.30.0
-[WARN] Skipping registry.k8s.io/coredns/coredns:v1.9.3 (already exist)
-+-------- [RESULT] -------------------------------------------------+
-|  New     = 3                                                      |
-|  Updated = 0                                                      |
-|  Failed  = 0                                                      |
-+-------------------------------------------------------------------+
-  [+] Synced (3): v1.28.5  v1.29.3  v1.30.0
-  [~] Updated (0): -
-  [=] Already exist (1): v1.9.3
+### list
 
-[INFO] Sync complete: Success=5 Failed=0 Exist=1
+列出标签。默认只查询 target 侧；使用 `--online` 时会额外查询 source 侧。
+
+```bash
+image-syncer list -c config-test.yaml
+image-syncer list -c config-test.yaml -r alpine
+image-syncer list -c config-test.yaml -r alpine --online
 ```
 
-### check 命令输出示例
+`list --online` 查询 source 时会遵循规则里的 `proxy` 设置。
 
-```
-+-------- [RULE 1/2] -----------------------------------------------+
-|  Name        = alpine                                             |
-|  Source      = docker.io/library/alpine                           |
-|  Destination = harbor.example.com/docker.io/alpine                |
-|  Mode        = tags (exact match)                                 |
-+-------------------------------------------------------------------+
-  [+] Will sync (2): 3.19  3.20
-  [~] Need update (0): -
-  [=] Already exist (0): -
+### delete
 
+删除 target 侧冗余标签。
 
-+-------- [RULE 2/2] -----------------------------------------------+
-|  Name        = coredns                                            |
-|  Source      = registry.k8s.io/coredns/coredns                    |
-|  Destination = harbor.example.com/registry.k8s.io/coredns/coredns |
-|  Mode        = tag_regex (exact match)                            |
-|  Pattern     = ^v1\.(28|29|30)\.[0-9]+$                           |
-|  Total tags  = 42                                                 |
-+-------------------------------------------------------------------+
-  [+] Will sync (3): v1.28.5  v1.29.3  v1.30.0
-  [~] Need update (0): -
-  [=] Already exist (1): v1.9.3
+```bash
+image-syncer delete -c config-test.yaml --dry-run
+image-syncer delete -c config-test.yaml -r ubuntu --dry-run
+image-syncer delete -c config-test.yaml -r ubuntu
+image-syncer delete -c config-test.yaml -r ubuntu --online --dry-run
 ```
 
-### delete 命令输出示例
+当前删除流程会先计算待删除标签，再由 `ExecuteDelete` 删除 `Over` 分组。建议先使用 `--dry-run` 查看输出。
 
-```
-[INFO] Config loaded successfully
-[INFO] Dry run mode - no changes will be made
-[INFO] Start delete, 1 rules in total
+## 构建与验证
 
-+-------- [RULE 1/1] -----------------------------------------------+
-|  Name        = ubuntu                                             |
-|  Destination = harbor.example.com/docker.io/ubuntu                |
-|  Mode        = tags (keep listed only)                            |
-|  Keep tags   = 22.04, 24.04                                       |
-|  Total tags  = 21                                                 |
-|  Dry run     = true (no changes)                                  |
-+-------------------------------------------------------------------+
-  [-] Unmatched (will delete) (19): 24.10  23.10  23.04  22.10  22.04.1  20.04  18.04  16.04 ...
-  [=] Kept (2): 24.04  22.04
+```bash
+# 构建本地二进制
+mkdir -p bin
+CGO_ENABLED=0 go build -tags "containers_image_openpgp" -o bin/image-syncer .
 
-[INFO] Delete complete: Deleted=0 Failed=0 Skipped=19
-```
+# 静态检查
+CGO_ENABLED=0 go vet -tags "containers_image_openpgp" ./...
 
-### list 命令输出示例
+# 单元测试
+CGO_ENABLED=0 go test -tags "containers_image_openpgp" ./cmd ./internal/sync
 
-```
-+-------- [RULE 1/2] -----------------------------------------------+
-|  Name        = alpine                                             |
-|  Source      = docker.io/library/alpine                           |
-|  Destination = harbor.example.com/docker.io/alpine                |
-|  Mode        = tags                                               |
-|  Total tags  = 2                                                  |
-+-------------------------------------------------------------------+
-  ● Tags (2): 3.19  3.20
-
-
-+-------- [RULE 2/2] -----------------------------------------------+
-|  Name        = coredns                                            |
-|  Source      = registry.k8s.io/coredns/coredns                    |
-|  Destination = harbor.example.com/registry.k8s.io/coredns/coredns |
-|  Mode        = tag_regex                                          |
-|  Pattern     = ^v1\.(28|29|30)\.[0-9]+$                           |
-|  Total tags  = 4                                                  |
-+-------------------------------------------------------------------+
-  ● Tags (4): v1.9.3  v1.28.5  v1.29.3  v1.30.0
+# 查看命令
+./bin/image-syncer --help
+./bin/image-syncer sync --help
+./bin/image-syncer list --help
+./bin/image-syncer delete --help
 ```
 
-## Docker 部署
+`internal/hub/client_test.go` 会访问外部 registry，离线环境或受限网络中不建议直接跑全量 `go test ./...`。
+
+## Docker
+
+仓库包含多阶段 `Dockerfile`，用于构建容器镜像：
+
+```bash
+docker build -t docker-image-sync:latest .
+```
+
+运行时通常需要挂载配置文件和 Docker 认证文件：
 
 ```bash
 docker run --rm \
-  -v /path/to/config.yaml:/etc/image-syncer/config.yaml:ro \
+  -v /path/to/config.yaml:/etc/docker-image-sync/config.yaml:ro \
   -v ~/.docker/config.json:/root/.docker/config.json:ro \
-  image-syncer:latest
+  docker-image-sync:latest sync -c /etc/docker-image-sync/config.yaml
 ```
-
-需要挂载 `~/.docker/config.json` 以提供源仓库和 Harbor 的认证信息。可通过 Kubernetes CronJob 或 cron 定时执行。
 
 ## 项目结构
 
-```
-├── main.go                         # 入口
-├── cmd/                            # CLI 命令（sync, check, list, delete）
-│   ├── root.go                     # 根命令，定义 -c/--config 全局参数
-│   ├── sync.go                     # sync 子命令 - 执行镜像同步
-│   ├── check.go                    # check 子命令 - 预览匹配结果
-│   ├── list.go                     # list 子命令 - 列出目标仓库标签
-│   └── delete.go                   # delete 子命令 - 删除不匹配镜像
+```text
+├── main.go
+├── cmd/
+│   ├── root.go        # 根命令和统一输出函数
+│   ├── sync.go        # sync 子命令，含 --dry-run 和 --force
+│   ├── list.go        # list 子命令，含 --online
+│   └── delete.go      # delete 子命令，含 --dry-run 和 --online
 ├── internal/
-│   ├── config/                     # 配置加载、校验、规则过滤、镜像引用解析
-│   ├── registry/
-│   │   ├── types.go                # SourceClient 接口、SourceTag、Harbor 类型
-│   │   ├── client.go               # 源客户端工厂（NewSourceClient）
-│   │   ├── containers_image.go     # 基于 containers/image 的统一源客户端
-│   │   └── harbor.go               # Harbor API v2 客户端（含认证）
-│   ├── syncer/                     # 同步引擎、标签过滤、镜像复制、删除分析
-│   └── logger/                     # 日志输出、卡片格式输出、标签分组显示
-├── config.yaml.example             # 配置示例
-└── Dockerfile                      # 多阶段构建
+│   ├── cfg/           # 配置结构、加载、校验、规则过滤
+│   ├── hub/           # containers/image 客户端和镜像引用解析
+│   ├── sync/          # 标签分析、镜像复制、删除执行
+│   └── logger/        # 卡片输出和标签分组输出
+├── docs/
+├── config-test.yaml
+├── config.yaml.example
+├── Dockerfile
+└── go.mod / go.sum
 ```
+
+## 注意事项
+
+- 当前没有 `check` 子命令；使用 `sync --dry-run` 预览同步计划。
+- source 侧代理只在规则 `proxy: true` 时设置，target 侧不设置代理。
+- 镜像复制当前设置 `PreserveDigests: false`，以提高 schema1 等旧镜像兼容性。
+- `filterTags` 会同时接受 `tags` 和 `tag_regex` 的匹配结果；配置层目前不强制二选一。

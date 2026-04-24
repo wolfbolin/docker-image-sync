@@ -2,8 +2,9 @@ package logger
 
 import (
 	"fmt"
-	"os"
 	"strings"
+
+	"github.com/wolfbolin/bolbox/pkg/log"
 )
 
 const (
@@ -21,57 +22,18 @@ const (
 	MaxDisplayTags = 30
 )
 
-func Info(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, ColorWhite+"[INFO] "+format+ColorReset+"\n", args...)
-}
-
-func Done(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, ColorGreen+"[DONE] "+format+ColorReset+"\n", args...)
-}
-
-func Warn(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, ColorYellow+"[WARN] "+format+ColorReset+"\n", args...)
-}
-
-func Error(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, ColorRed+"[ERROR] "+format+ColorReset+"\n", args...)
-}
-
-func Fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, ColorRed+"[FATAL] "+format+ColorReset+"\n", args...)
-	os.Exit(1)
-}
-
-func Debug(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, ColorBlue+"[DEBUG] "+format+ColorReset+"\n", args...)
-}
-
-func PrintTagGroup(label string, tags []string) {
-	count := len(tags)
-	if count == 0 {
-		fmt.Printf("  %s (%d): %s-%s\n", label, count, ColorDim, ColorReset)
-		return
+func PrintTagGroup(label, color string, tags []string) {
+	groupString := fmt.Sprintf("%s%s%s: ", color, label, ColorReset)
+	var overflow string
+	var tagsList string
+	if len(tags) > MaxDisplayTags {
+		tagsList = strings.Join(tags[:MaxDisplayTags], "  ")
+		overflow = fmt.Sprintf(" %s... +%d more%s", ColorDim, len(tags)-MaxDisplayTags, ColorReset)
+	} else {
+		tagsList = strings.Join(tags, "  ")
 	}
-
-	display := tags
-	truncated := false
-	if count > MaxDisplayTags {
-		display = tags[:MaxDisplayTags]
-		truncated = true
-	}
-
-	var parts []string
-	for _, t := range display {
-		parts = append(parts, t)
-	}
-	tagStr := strings.Join(parts, "  ")
-
-	suffix := ""
-	if truncated {
-		suffix = fmt.Sprintf(" %s... +%d more%s", ColorDim, count-MaxDisplayTags, ColorReset)
-	}
-
-	fmt.Printf("  %s (%d): %s%s\n", label, count, tagStr, suffix)
+	groupString += fmt.Sprintf("%s%s", tagsList, overflow)
+	log.Info(groupString)
 }
 
 func FormatTagList(tags []string) string {

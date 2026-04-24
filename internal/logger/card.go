@@ -3,6 +3,8 @@ package logger
 import (
 	"fmt"
 	"strings"
+
+	"github.com/wolfbolin/bolbox/pkg/log"
 )
 
 const (
@@ -13,12 +15,17 @@ var (
 	MinCardWidth = float64(50)
 )
 
-func PrintInfoCard(title string, kvs map[string]string) {
+type Pair struct {
+	Key string
+	Val string
+}
+
+func PrintInfoCard(title string, kvs []Pair) {
 	maxKeyLen := float64(0)
 	maxValLen := float64(0)
-	for key, val := range kvs {
-		maxKeyLen = max(maxKeyLen, float64(len(key)))
-		maxValLen = max(maxValLen, float64(len(val)))
+	for _, kv := range kvs {
+		maxKeyLen = max(maxKeyLen, float64(len(kv.Key)))
+		maxValLen = max(maxValLen, float64(len(kv.Val)))
 	}
 	cardWidth := int(max(MinCardWidth, StyleLength+maxValLen+maxKeyLen))
 
@@ -32,9 +39,9 @@ func PrintInfoCard(title string, kvs map[string]string) {
 
 	// Context
 	contextLines := make([]string, 0)
-	for key, val := range kvs {
-		keyStr := key + strings.Repeat(" ", int(maxKeyLen)-len(key))
-		valStr := val + strings.Repeat(" ", int(maxValLen)-len(val))
+	for _, kv := range kvs {
+		keyStr := kv.Key + strings.Repeat(" ", int(maxKeyLen)-len(kv.Key))
+		valStr := kv.Val + strings.Repeat(" ", int(maxValLen)-len(kv.Val))
 		line := fmt.Sprintf("|  %s = %s", keyStr, valStr)
 		line += strings.Repeat(" ", cardWidth-len(line)-3)
 		line += "  |"
@@ -44,9 +51,9 @@ func PrintInfoCard(title string, kvs map[string]string) {
 	// Bottom
 	bottomLine := "+" + strings.Repeat("-", cardWidth-2) + "+"
 
-	fmt.Println(titleLine)
+	log.Info(titleLine)
 	for _, line := range contextLines {
-		fmt.Println(line)
+		log.Info(line)
 	}
-	fmt.Println(bottomLine)
+	log.Info(bottomLine)
 }
